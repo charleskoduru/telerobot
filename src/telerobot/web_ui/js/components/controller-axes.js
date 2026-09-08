@@ -103,6 +103,7 @@ AFRAME.registerComponent('controller-axes', {
     // Save current position and rotation as the reference point
     this.grabStartPosition.copy(this.el.object3D.position);
     this.grabStartRotation.copy(this.el.object3D.rotation);
+    this.grabStartQuaternion.copy(this.el.object3D.quaternion);
     
     // Get the controller's backward direction (positive Z in local space)
     // This makes Z axis point where the back of the controller is facing

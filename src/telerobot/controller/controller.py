@@ -22,8 +22,6 @@ def _reset_processor_state(processor) -> None:
 
 
 class Controller(ABC):
-    """Base class for VR teleop controllers that manage processors and arm dispatch."""
-
     def __init__(self, robot: Robot, cfg: RobotConfig):
         self.robot = robot
         self.cfg = cfg
@@ -31,7 +29,6 @@ class Controller(ABC):
         self.awaiting_recalibration = False
 
     def _build_processor(self, motor_names: list[str], arm_cfg: ArmConfig):
-        """Create a kinematics solver and VR-to-arm processor pipeline."""
         kinematics_solver = build_kinematics(
             arm_type=arm_cfg.type,
             motor_names=motor_names,
@@ -49,35 +46,33 @@ class Controller(ABC):
 
     @abstractmethod
     def _build_processors(self) -> None:
-        """Create VR-to-arm processor pipelines."""
+        pass
 
     @abstractmethod
     def capture_initial_observations(self) -> None:
-        """Capture the initial arm observations used for reset."""
+        pass
 
     @abstractmethod
     def reset(self) -> None:
-        """Reset the robot to its initial position and rebuild processors."""
+        pass
 
     @abstractmethod
     def recalibrate(self) -> None:
-        """Re-anchor controller pose to the current robot pose without moving the robot."""
+        pass
 
     @abstractmethod
     def get_arm_observations(self) -> dict[str, RobotObservation]:
-        """Return per-arm observations keyed by arm name."""
+        pass
 
     @abstractmethod
     def process_vr_observation(self, vr_obs: dict) -> tuple[RobotObservation, RobotAction] | None:
-        """Dispatch a VR observation to the appropriate arms."""
+        pass
 
 
 class SingleController(Controller):
-    """Controller for a single SOFollower arm."""
-
     def __init__(self, robot: Robot, cfg: RobotConfig):
         super().__init__(robot, cfg)
-        self.arm_name = next(iter(cfg.arms))  # "left" or "right"
+        self.arm_name = next(iter(cfg.arms))
         self._build_processors()
 
     def _build_processors(self) -> None:
@@ -99,13 +94,14 @@ class SingleController(Controller):
 
     def recalibrate(self) -> None:
         """
-        Enter re-anchor mode.
+        Re-zero the VR controller to the robot's current end-effector pose.
 
-        The robot does NOT move here.
+        The robot does NOT move.
         The next enabled Grip frame captures a fresh robot/controller reference.
         """
         if not self.awaiting_recalibration:
             print("Recalibrating controller... release/re-grip or keep still.")
+
         self.awaiting_recalibration = True
         self.has_initial_position = True
         _reset_processor_state(self.processor)
@@ -117,11 +113,6 @@ class SingleController(Controller):
         controller_obs = copy.deepcopy(vr_obs[self.arm_name])
         enabled = bool(controller_obs.get("enabled", False))
 
-        # A-button recalibration flow:
-        # 1. A sets awaiting_recalibration=True.
-        # 2. Until Grip is active, do nothing.
-        # 3. First Grip frame is forced to zero delta + identity rotation.
-        # 4. EEReferenceAndDelta latches current robot FK as the new reference.
         if self.awaiting_recalibration:
             if not enabled:
                 return None
@@ -145,8 +136,6 @@ class SingleController(Controller):
 
 
 class BiController(Controller):
-    """Controller for a BiSOFollower dual-arm robot."""
-
     def __init__(self, robot: Robot, cfg: RobotConfig):
         super().__init__(robot, cfg)
         self._build_processors()
@@ -239,9 +228,10 @@ class BiController(Controller):
 
 
 def build_controller(robot: Robot, cfg: RobotConfig) -> Controller:
-    """Create the appropriate controller based on the robot type."""
     if isinstance(robot, SOFollower):
         return SingleController(robot, cfg)
+
     if isinstance(robot, BiSOFollower):
         return BiController(robot, cfg)
+
     raise TypeError(f"Unsupported robot type: {type(robot).__name__}")

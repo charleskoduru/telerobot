@@ -145,7 +145,7 @@ def main():
 
     log_message(logger, "Starting teleop loop. Connect your VR headset to teleoperate the robot...")
     loop_count = 0
-
+    last_action_str = "none"
     try:
         while True:
             t0 = time.perf_counter()
@@ -158,8 +158,15 @@ def main():
             if vr_obs is None:
                 pass  # No observation received yet; cameras still streamed below
             else:
-                action_str = vr_obs.get('action', 'none')
-                
+                raw_action_str = vr_obs.get("action", "none")
+
+                if raw_action_str == last_action_str and raw_action_str != "none":
+                    action_str = "none"
+                else:
+                    action_str = raw_action_str
+
+                last_action_str = raw_action_str
+
                 if action_str == "recalibrate":
                     controller.recalibrate()
                     
