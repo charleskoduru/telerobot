@@ -30,20 +30,6 @@
       xr-mode-ui="XRMode: ar"
       background="transparent: true">
       <a-assets></a-assets>
-
-      <!-- RIF Robotics -->
-      <a-text
-        id="rif-banner"
-        value="RIF ROBOTICS"
-        position="0 2.25 -3"
-        align="center"
-        anchor="center"
-        color="#FFFFFF"
-        width="4"
-        look-at-headset>
-      </a-text>
-
-
       
       <!-- Environment -->
       <a-sky color="#222"></a-sky>
