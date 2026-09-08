@@ -50,5 +50,13 @@ To delete an episode, run the following command with the list of episodes you wa
 
 ```bash
 poetry run telerobot delete-episodes --repo-id <YOUR_HF_USERNAME>/vr_test_single_arm> --episodes "[0, 2, 5]" --push-to-hub
+
+#Delte local dataset
+
+find /workspace/.cache/lerobot -type d -path '*vr_test_single_arm*'
+
+rm -rf <path the cmd returned>
 ```
+
+
 
