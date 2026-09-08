@@ -47,25 +47,25 @@ python workspace_bounds_gui.py
 
 ## Setting up hugging face cli to upload datasets 
 
-#create hugging face account/ log in
+> Create hugging face account/ log in
 
-#Click on your profile and click on access tocken 
+> Click on your profile and click on access tocken 
 
-#Create new access token name it 'rif token' then choose permissions for 'write' or 'full access' 
+> Create new access token name it 'rif token' then choose permissions for 'write' or 'full access' 
 
-#Save your token locally 
+> Save your token locally 
 
-#To create a dataset, click on your profile and click ' new data set' 
+> To create a dataset, click on your profile and click ' new data set' 
 
-#for the dataset name you can use 'vr_test_single_arm'
+> for the dataset name you can use 'vr_test_single_arm'
 
-#choose public 
+> choose public 
 
-#click 'create dataset 
+> click 'create dataset 
 
-#then follow the auth hf login instructions, you will your access token here 
+> then follow the auth hf login instructions, you will your access token here 
 
-#One the auth hf is setup then, go to 'repo_id' in the config yaml file and update the 'hf user id/data set name'
+> One the auth hf is setup then, go to 'repo_id' in the config yaml file and update the 'hf user id/data set name'
 
 
 
