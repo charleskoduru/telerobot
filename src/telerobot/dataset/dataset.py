@@ -10,7 +10,8 @@ from lerobot.datasets.pipeline_features import (
     aggregate_pipeline_dataset_features,
     create_initial_features,
 )
-from lerobot.datasets.utils import build_dataset_frame, combine_feature_dicts, ACTION, OBS_STR
+from lerobot.utils.feature_utils import build_dataset_frame, combine_feature_dicts
+from lerobot.utils.constants import ACTION, OBS_STR
 from lerobot.processor import make_default_processors
 
 from telerobot.logger import log_message
@@ -71,7 +72,6 @@ def setup_dataset(robot, cfg, logger) -> LeRobotDataset | None:
             robot_type=robot.name,
             features=dataset_features,
             use_videos=True,
-            vcodec=VCODEC,
             streaming_encoding=True,
         )
         log_message(logger, f"📁 Dataset recording enabled: {cfg.dataset.repo_id}")
@@ -84,17 +84,23 @@ def end_active_episode(
     logger,
 ) -> None:
     """Save and close the current episode if recording is active."""
-    if dataset is not None:
-        episode_buffer = getattr(dataset, "episode_buffer", None)
-        frame_indices = episode_buffer.get("frame_index", []) if isinstance(episode_buffer, dict) else []
-        if not frame_indices:
-            log_message(logger, "⚠️ No frames recorded, skipping empty episode.")
-            return
-        dataset.save_episode()
-        log_message(
-            logger,
-            f"✅ Episode {dataset.num_episodes - 1} saved ({dataset.num_frames} total frames)",
-        )
+    if dataset is None:
+        return
+
+    # New LeRobot API keeps the episode buffer inside DatasetWriter.
+    # has_pending_frames() is the supported way to check for unsaved frames.
+    if not dataset.has_pending_frames():
+        log_message(logger, "⚠️ No frames recorded, skipping empty episode.")
+        return
+
+    dataset.save_episode()
+
+    log_message(
+        logger,
+        f"✅ Episode {dataset.num_episodes - 1} saved "
+        f"({dataset.num_frames} total frames)",
+    )
+
 
 def record_step(
     dataset: LeRobotDataset | None,

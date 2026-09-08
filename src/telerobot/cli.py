@@ -175,7 +175,7 @@ def main():
                     controller.reset()
                 elif action_str == 'start_episode' and not recording:
                     # Begin a new recording episode (no-op if already recording)
-                    log_message(logger, f"🔴 Recording episode {dataset.num_episodes if dataset else '?'}...")
+                    log_message(logger, f"🔴 Recording episode {dataset.num_episodes if dataset is not None else '?'}...")
                     recording = True
                     finalized_dataset = False
                 elif action_str == 'stop_episode' and recording:
