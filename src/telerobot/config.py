@@ -7,12 +7,18 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
+from lerobot.cameras.opencv.configuration_opencv import (
+    OpenCVCameraConfig,
+    Cv2Backends,
+)
+
 from lerobot.robots.robot import Robot
 from lerobot.robots.so_follower import SOFollower
 from lerobot.robots.so_follower.config_so_follower import SOFollowerConfig, SOFollowerRobotConfig
 from lerobot.robots.bi_so_follower.config_bi_so_follower import BiSOFollowerConfig
 from lerobot.robots.bi_so_follower.bi_so_follower import BiSOFollower
+
+
 
 
 @dataclass
@@ -158,7 +164,11 @@ def load_robot(path: str | Path) -> tuple[Robot, RobotConfig]:
     # Build camera configs
     camera_configs = {
         name: OpenCVCameraConfig(
-            index_or_path=cam.index, width=cam.width, height=cam.height, fps=cam.fps
+            index_or_path=cam.index,
+            width=cam.width,
+            height=cam.height,
+            fps=cam.fps,
+            backend=Cv2Backends.V4L2,
         )
         for name, cam in cfg.cameras.items()
     }

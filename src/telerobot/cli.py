@@ -199,16 +199,29 @@ def main():
 
             # Always stream cameras — reuse obs frames when available, otherwise read directly
             for cam_name, cam in duo_robot.cameras.items():
-                frame = camera_frames.get(cam_name) if camera_frames else cam.async_read()
+
+                if camera_frames:
+                    frame = camera_frames.get(cam_name)
+                else:
+                    try:
+                        frame = cam.read_latest()
+                    except Exception:
+                        continue
+
                 camera_server.update_camera_frame(cam_name, frame)
-
             t_camera = time.perf_counter()  # TODO: Remove timing debug
-
-            loop_count += 1
-            maybe_log_loop_timing(logger, loop_count, t0, t_control, t_rerun, t_camera)
 
             precise_sleep(max(1.0 / cfg.fps - (time.perf_counter() - t0), 0.0))
 
+            loop_count += 1
+            maybe_log_loop_timing(
+                logger,
+                loop_count,
+                t0,
+                t_control,
+                t_rerun,
+                t_camera,
+            )
     except KeyboardInterrupt:
         log_message(logger, "\nStopping teleop...")
 
