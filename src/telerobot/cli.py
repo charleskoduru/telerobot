@@ -162,7 +162,7 @@ def main():
                 
                 if action_str == "recalibrate":
                     controller.recalibrate()
-                    continue
+                    
 
                 if action_str == 'reset' and not controller.has_initial_position:
                     controller.reset()

@@ -20,6 +20,7 @@ AFRAME.registerComponent('controller-axes', {
     this.isGrabbing = false;
     this.grabStartPosition = new THREE.Vector3();
     this.grabStartRotation = new THREE.Euler();
+    this.grabStartQuaternion = new THREE.Quaternion();
     this.grabYawAngle = 0; // Y-axis rotation at grab time
     this.grabYawQuaternion = new THREE.Quaternion(); // For rotating axes to match grab direction
     
@@ -68,11 +69,31 @@ AFRAME.registerComponent('controller-axes', {
   onAButton: function() {
     console.log("A pressed -> recalibrate");
 
-    if (window.webSocketManager && window.webSocketManager.isConnected) {
+    // Re-zero the controller-side reference immediately.
+    // This prevents the next Grip frame from containing a large old delta.
+    if (this.el.object3D) {
+      this.grabStartPosition.copy(this.el.object3D.position);
+      this.grabStartRotation.copy(this.el.object3D.rotation);
+      this.grabStartQuaternion.copy(this.el.object3D.quaternion);
 
-        window.webSocketManager.sendAction("recalibrate");
-
+      const backward = new THREE.Vector3(0, 0, 1);
+      backward.applyQuaternion(this.el.object3D.quaternion);
+      this.grabYawAngle = Math.atan2(backward.x, backward.z);
+      this.grabYawQuaternion.setFromAxisAngle(
+        new THREE.Vector3(0, 1, 0),
+        this.grabYawAngle
+      );
     }
+
+    if (!window.webSocketManager || !window.webSocketManager.isConnected) {
+      console.log("WebSocket not connected");
+      return;
+    }
+
+    window.webSocketManager
+      .triggerAction("recalibrate", 100)
+      .then(() => console.log("Recalibrate action sent"))
+      .catch(console.error);
   },
 
   onGripDown: function() {
@@ -262,10 +283,18 @@ AFRAME.registerComponent('controller-axes', {
         [displayX || 0, displayY || 0, displayZ || 0] : 
         [0, 0, 0];
       
-      // Rotation as quaternion [x, y, z, w] array
-      // Get current quaternion from controller
-      const quaternion = this.el.object3D.quaternion;
-      const rot = [quaternion.x, quaternion.y, quaternion.z, quaternion.w];
+      // Rotation as quaternion [x, y, z, w] array.
+      // IMPORTANT: send rotation DELTA from Grip start, not absolute Quest rotation.
+      // Sending absolute rotation causes the robot to bend/jump when Grip is pressed.
+      let rot;
+      if (this.isGrabbing) {
+        const currentQuat = this.el.object3D.quaternion.clone();
+        const startInv = this.grabStartQuaternion.clone().invert();
+        const deltaQuat = startInv.multiply(currentQuat);
+        rot = [deltaQuat.x, deltaQuat.y, deltaQuat.z, deltaQuat.w];
+      } else {
+        rot = [0, 0, 0, 1];
+      }
       
       // enabled = isGrabbing
       const enabled = this.isGrabbing;

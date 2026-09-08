@@ -13,6 +13,14 @@ from telerobot.controller.vr_processor import build_vr_to_arm_processor
 from telerobot.controller.kinematics import build_kinematics
 
 
+def _reset_processor_state(processor) -> None:
+    """Reset internal processor state: EE latch, last EE position, IK guess, etc."""
+    for step in getattr(processor, "steps", []):
+        reset_fn = getattr(step, "reset", None)
+        if callable(reset_fn):
+            reset_fn()
+
+
 class Controller(ABC):
     """Base class for VR teleop controllers that manage processors and arm dispatch."""
 
@@ -20,6 +28,7 @@ class Controller(ABC):
         self.robot = robot
         self.cfg = cfg
         self.has_initial_position = True
+        self.awaiting_recalibration = False
 
     def _build_processor(self, motor_names: list[str], arm_cfg: ArmConfig):
         """Create a kinematics solver and VR-to-arm processor pipeline."""
@@ -28,6 +37,7 @@ class Controller(ABC):
             motor_names=motor_names,
             regularization=arm_cfg.regularization,
         )
+
         return build_vr_to_arm_processor(
             motor_names=motor_names,
             kinematics_solver=kinematics_solver,
@@ -50,16 +60,16 @@ class Controller(ABC):
         """Reset the robot to its initial position and rebuild processors."""
 
     @abstractmethod
+    def recalibrate(self) -> None:
+        """Re-anchor controller pose to the current robot pose without moving the robot."""
+
+    @abstractmethod
     def get_arm_observations(self) -> dict[str, RobotObservation]:
         """Return per-arm observations keyed by arm name."""
 
     @abstractmethod
     def process_vr_observation(self, vr_obs: dict) -> tuple[RobotObservation, RobotAction] | None:
-        """Dispatch a VR observation to the appropriate arms.
-
-        Returns:
-            A (observation, action) tuple for dataset recording, or None.
-        """
+        """Dispatch a VR observation to the appropriate arms."""
 
 
 class SingleController(Controller):
@@ -67,7 +77,7 @@ class SingleController(Controller):
 
     def __init__(self, robot: Robot, cfg: RobotConfig):
         super().__init__(robot, cfg)
-        self.arm_name = next(iter(cfg.arms))  # "left" or "right" — matches VR controller side
+        self.arm_name = next(iter(cfg.arms))  # "left" or "right"
         self._build_processors()
 
     def _build_processors(self) -> None:
@@ -83,31 +93,50 @@ class SingleController(Controller):
     def reset(self) -> None:
         print("Resetting robot to initial position...")
         self.robot.send_action(self.initial_obs)
-        self._build_processors()
+        _reset_processor_state(self.processor)
         self.has_initial_position = True
+        self.awaiting_recalibration = False
 
-    def recalibrate(self):
-        print("Recalibrating controller...")
+    def recalibrate(self) -> None:
+        """
+        Enter re-anchor mode.
 
-        if hasattr(self.processor, "steps"):
-            for step in self.processor.steps:
-                if hasattr(step, "relatch"):
-                    step.relatch()
-
+        The robot does NOT move here.
+        The next enabled Grip frame captures a fresh robot/controller reference.
+        """
+        if not self.awaiting_recalibration:
+            print("Recalibrating controller... release/re-grip or keep still.")
+        self.awaiting_recalibration = True
         self.has_initial_position = True
-
+        _reset_processor_state(self.processor)
 
     def get_arm_observations(self) -> dict[str, RobotObservation]:
         return {self.arm_name: self.robot.get_observation()}
 
     def process_vr_observation(self, vr_obs: dict) -> tuple[RobotObservation, RobotAction] | None:
         controller_obs = copy.deepcopy(vr_obs[self.arm_name])
+        enabled = bool(controller_obs.get("enabled", False))
 
-        if controller_obs["enabled"]:
+        # A-button recalibration flow:
+        # 1. A sets awaiting_recalibration=True.
+        # 2. Until Grip is active, do nothing.
+        # 3. First Grip frame is forced to zero delta + identity rotation.
+        # 4. EEReferenceAndDelta latches current robot FK as the new reference.
+        if self.awaiting_recalibration:
+            if not enabled:
+                return None
+
+            print("New teleop reference captured.")
+            _reset_processor_state(self.processor)
+
+            controller_obs["pos"] = [0.0, 0.0, 0.0]
+            controller_obs["rot"] = [0.0, 0.0, 0.0, 1.0]
+
+            self.awaiting_recalibration = False
+            self.has_initial_position = True
+
+        if enabled:
             self.has_initial_position = False
-            # print(f"{self.arm_name.capitalize()} Arm VR Position: {controller_obs['pos']}")
-        # else:
-            # print(f"{self.arm_name.capitalize()} controller not enabled.")
 
         obs = self.robot.get_observation()
         joint_action = self.processor((controller_obs, obs))
@@ -116,7 +145,7 @@ class SingleController(Controller):
 
 
 class BiController(Controller):
-    """Controller for a BiSOFollower (dual-arm) robot."""
+    """Controller for a BiSOFollower dual-arm robot."""
 
     def __init__(self, robot: Robot, cfg: RobotConfig):
         super().__init__(robot, cfg)
@@ -142,21 +171,23 @@ class BiController(Controller):
         print("Resetting robot to initial position...")
         self.robot.right_arm.send_action(self.initial_right_obs)
         self.robot.left_arm.send_action(self.initial_left_obs)
-        self._build_processors()
-        self.has_initial_position = True
-
-
-    def recalibrate(self):
-        print("Recalibrating controllers...")
 
         for processor in self.processors.values():
-            if hasattr(processor, "steps"):
-                for step in processor.steps:
-                    if hasattr(step, "relatch"):
-                        step.relatch()
+            _reset_processor_state(processor)
 
         self.has_initial_position = True
-        
+        self.awaiting_recalibration = False
+
+    def recalibrate(self) -> None:
+        if not self.awaiting_recalibration:
+            print("Recalibrating controllers... release/re-grip or keep still.")
+
+        self.awaiting_recalibration = True
+        self.has_initial_position = True
+
+        for processor in self.processors.values():
+            _reset_processor_state(processor)
+
     def get_arm_observations(self) -> dict[str, RobotObservation]:
         return {
             "left": self.robot.left_arm.get_observation(),
@@ -167,15 +198,30 @@ class BiController(Controller):
         combined_obs: RobotObservation = {}
         combined_action: RobotAction = {}
 
+        any_enabled = any(bool(vr_obs[side].get("enabled", False)) for side in ("right", "left"))
+
+        if self.awaiting_recalibration:
+            if not any_enabled:
+                return None
+
+            print("New dual-arm teleop reference captured.")
+
+            for processor in self.processors.values():
+                _reset_processor_state(processor)
+
+            for side in ("right", "left"):
+                vr_obs[side]["pos"] = [0.0, 0.0, 0.0]
+                vr_obs[side]["rot"] = [0.0, 0.0, 0.0, 1.0]
+
+            self.awaiting_recalibration = False
+            self.has_initial_position = True
+
         for side in ("right", "left"):
             arm = getattr(self.robot, f"{side}_arm")
             controller_obs = copy.deepcopy(vr_obs[side])
 
             if controller_obs["enabled"]:
                 self.has_initial_position = False
-                print(f"{side.capitalize()} Arm VR Position: {controller_obs['pos']}")
-            else:
-                print(f"{side.capitalize()} controller not enabled.")
 
             obs = arm.get_observation()
             joint_action = self.processors[side]((controller_obs, obs))
@@ -184,7 +230,6 @@ class BiController(Controller):
             combined_obs.update({f"{side}_{k}": v for k, v in obs.items()})
             combined_action.update({f"{side}_{k}": v for k, v in joint_action.items()})
 
-        # Add camera observations from the full robot
         full_obs = self.robot.get_observation()
         for key in full_obs:
             if key not in combined_obs:
