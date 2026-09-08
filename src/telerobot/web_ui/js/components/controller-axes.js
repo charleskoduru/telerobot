@@ -39,7 +39,7 @@ AFRAME.registerComponent('controller-axes', {
     this.onGripDown = this.onGripDown.bind(this);
     this.onGripUp = this.onGripUp.bind(this);
     this.onThumbstickMoved = this.onThumbstickMoved.bind(this);
-    
+    this.onAButton = this.onAButton.bind(this);
     // Listen for grip/squeeze button events
     this.el.addEventListener('gripdown', this.onGripDown);
     this.el.addEventListener('gripup', this.onGripUp);
@@ -49,7 +49,7 @@ AFRAME.registerComponent('controller-axes', {
     // Listen for thumbstick/joystick events
     this.el.addEventListener('thumbstickmoved', this.onThumbstickMoved);
     this.el.addEventListener('axismove', this.onThumbstickMoved);
-    
+    this.el.addEventListener('abuttondown', this.onAButton);
     this.createAxes();
     this.tick = AFRAME.utils.throttleTick(this.tick, 16, this); // ~60fps for smooth rotation
   },
@@ -62,6 +62,16 @@ AFRAME.registerComponent('controller-axes', {
     } else if (evt.detail && evt.detail.axis && evt.detail.axis.length >= 2) {
       // axismove event format: axis[0] = x, axis[1] = y
       this.joystickX = evt.detail.axis[0];
+    }
+  },
+
+  onAButton: function() {
+    console.log("A pressed -> recalibrate");
+
+    if (window.webSocketManager && window.webSocketManager.isConnected) {
+
+        window.webSocketManager.sendAction("recalibrate");
+
     }
   },
 
@@ -282,7 +292,7 @@ AFRAME.registerComponent('controller-axes', {
     this.el.removeEventListener('squeezeend', this.onGripUp);
     this.el.removeEventListener('thumbstickmoved', this.onThumbstickMoved);
     this.el.removeEventListener('axismove', this.onThumbstickMoved);
-    
+    this.el.removeEventListener('abuttondown', this.onAButton);
     if (this.axesContainer && this.axesContainer.parentNode) {
       this.axesContainer.parentNode.removeChild(this.axesContainer);
     }

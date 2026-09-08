@@ -159,6 +159,10 @@ def main():
                 pass  # No observation received yet; cameras still streamed below
             else:
                 action_str = vr_obs.get('action', 'none')
+                
+                if action_str == "recalibrate":
+                    controller.recalibrate()
+                    continue
 
                 if action_str == 'reset' and not controller.has_initial_position:
                     controller.reset()

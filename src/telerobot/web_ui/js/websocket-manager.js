@@ -199,7 +199,7 @@ class WebSocketManager {
         return;
       }
 
-      const validActions = ['reset', 'start_episode', 'stop_episode', 'save_dataset'];
+      const validActions = ['reset', 'recalibrate' , 'start_episode', 'stop_episode', 'save_dataset'];
       if (!validActions.includes(action)) {
         console.error('❌ Invalid action:', action);
         reject(new Error('Invalid action: ' + action));

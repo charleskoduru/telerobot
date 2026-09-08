@@ -86,6 +86,17 @@ class SingleController(Controller):
         self._build_processors()
         self.has_initial_position = True
 
+    def recalibrate(self):
+        print("Recalibrating controller...")
+
+        if hasattr(self.processor, "steps"):
+            for step in self.processor.steps:
+                if hasattr(step, "relatch"):
+                    step.relatch()
+
+        self.has_initial_position = True
+
+
     def get_arm_observations(self) -> dict[str, RobotObservation]:
         return {self.arm_name: self.robot.get_observation()}
 
@@ -134,6 +145,18 @@ class BiController(Controller):
         self._build_processors()
         self.has_initial_position = True
 
+
+    def recalibrate(self):
+        print("Recalibrating controllers...")
+
+        for processor in self.processors.values():
+            if hasattr(processor, "steps"):
+                for step in processor.steps:
+                    if hasattr(step, "relatch"):
+                        step.relatch()
+
+        self.has_initial_position = True
+        
     def get_arm_observations(self) -> dict[str, RobotObservation]:
         return {
             "left": self.robot.left_arm.get_observation(),
