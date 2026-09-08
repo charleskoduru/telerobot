@@ -9,7 +9,9 @@ This tool reads the robot's live joint angles, computes the end-effector XYZ pos
 ## What it does
 
 The GUI helps generate this part of `config.yaml`:
-
+``` bash
+python workspace_bounds_gui.py 
+```
 ```yaml
 end_effector_bounds:
   min: [0.20, -0.20, 0.05]

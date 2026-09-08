@@ -32,6 +32,8 @@ arms:
       min: [0.18, -0.20, -0.025]
       max: [0.40,  0.20, 0.30]
 
+      #min: [-0.0396, -0.3102, -0.0706]
+      #max: [0.3943, 0.3104, 0.4228]
 
   
     max_ee_step_m: 0.04 # from 0.2, limit how much the end effectors moves per frame (in meters) to avoid overshooting and instability
