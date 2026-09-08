@@ -29,6 +29,7 @@ class Controller(ABC):
         self.cfg = cfg
         self.has_initial_position = True
         self.awaiting_recalibration = False
+        self.clutch_was_enabled = False
 
     def _build_processor(self, motor_names: list[str], arm_cfg: ArmConfig):
         """Create a kinematics solver and VR-to-arm processor pipeline."""
@@ -102,12 +103,15 @@ class SingleController(Controller):
         Enter re-anchor mode.
 
         The robot does NOT move here.
-        The next enabled Grip frame captures a fresh robot/controller reference.
+        The next Grip frame captures a fresh robot/controller reference.
         """
-        if not self.awaiting_recalibration:
-            print("Recalibrating controller... release/re-grip or keep still.")
+        if self.awaiting_recalibration:
+            return
+
+        print("Recalibrating controller... now press Grip to capture new reference.")
         self.awaiting_recalibration = True
         self.has_initial_position = True
+        self.clutch_was_enabled = False
         _reset_processor_state(self.processor)
 
     def get_arm_observations(self) -> dict[str, RobotObservation]:
@@ -117,15 +121,34 @@ class SingleController(Controller):
         controller_obs = copy.deepcopy(vr_obs[self.arm_name])
         enabled = bool(controller_obs.get("enabled", False))
 
-        # A-button recalibration flow:
-        # 1. A sets awaiting_recalibration=True.
-        # 2. Until Grip is active, do nothing.
-        # 3. First Grip frame is forced to zero delta + identity rotation.
-        # 4. EEReferenceAndDelta latches current robot FK as the new reference.
-        if self.awaiting_recalibration:
-            if not enabled:
-                return None
+        # CLUTCH RELEASED:
+        # Grip is not held, so freeze the robot by sending no new action.
+        # Also reset the processor state so the next Grip press captures a fresh reference.
+        if not enabled:
+            if self.clutch_was_enabled:
+                print("Clutch released: robot frozen.")
+                _reset_processor_state(self.processor)
 
+            self.clutch_was_enabled = False
+            return None
+
+        # CLUTCH ENGAGED:
+        # First frame after pressing Grip. Force zero controller delta so the robot
+        # latches its CURRENT FK pose as the new reference and does not jump.
+        if not self.clutch_was_enabled:
+            print("Clutch engaged: new reference captured.")
+            _reset_processor_state(self.processor)
+
+            controller_obs["pos"] = [0.0, 0.0, 0.0]
+            controller_obs["rot"] = [0.0, 0.0, 0.0, 1.0]
+
+            self.clutch_was_enabled = True
+            self.awaiting_recalibration = False
+            self.has_initial_position = True
+
+        # A-button recalibration uses the same clutch flow:
+        # after A is pressed, the next Grip frame becomes the new zero point.
+        if self.awaiting_recalibration:
             print("New teleop reference captured.")
             _reset_processor_state(self.processor)
 
@@ -135,8 +158,7 @@ class SingleController(Controller):
             self.awaiting_recalibration = False
             self.has_initial_position = True
 
-        if enabled:
-            self.has_initial_position = False
+        self.has_initial_position = False
 
         obs = self.robot.get_observation()
         joint_action = self.processor((controller_obs, obs))
