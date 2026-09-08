@@ -6,13 +6,12 @@ robot:
   fps: 30
   use_rerun: false  # set to true to enable the Rerun viewer
 
-cameras: {}
-# cameras:
-#   wrist:
-#     index: "/dev/video2"
-#     width: 640
-#     height: 480
-#     fps: 30
+cameras:
+  gripperCam:
+    index: "/dev/video2"
+    width: 640
+    height: 480
+    fps: 30
 
   # main:
   #   index: "/dev/video0"
@@ -25,7 +24,7 @@ arms:
     type: so100
     port: /dev/ttyACM0
     use_degrees: true
-    cameras: [] # [wrist, main]
+    cameras: [gripperCam] # [gripperCam, main]
     regularization: 1.0e-3 #adjust IK smoothing/stability (lower = more aggressive, higher = more stable), .5e-3, 1.0e-3, 3.0e-3 MAX: 
     end_effector_step_sizes: {  x: 0.45, y: 0.45, z: 0.45 } #scale between xr controller pose vs. robot end effector pose (lower = less sensitive, higher = more sensitive) 
     end_effector_bounds: #allowable workspace for the robot end effector (in meters), measure from the robot base j1. 
