@@ -8,7 +8,38 @@ from lerobot.utils.visualization_utils import init_rerun, log_rerun_data  # noqa
 
 from telerobot.config import load_robot
 from telerobot.controller import build_controller
-from telerobot.dataset import setup_dataset, end_active_episode, record_step, finalize_dataset, delete_episodes_from_dataset
+try:
+    from telerobot.dataset import (
+        setup_dataset,
+        end_active_episode,
+        record_step,
+        finalize_dataset,
+        delete_episodes_from_dataset,
+    )
+    DATASET_AVAILABLE = True
+
+except Exception as e:
+    print(f"Dataset support disabled: {e}")
+
+    DATASET_AVAILABLE = False
+
+    def setup_dataset(*args, **kwargs):
+        return None
+
+    def end_active_episode(*args, **kwargs):
+        pass
+
+    def record_step(*args, **kwargs):
+        pass
+
+    def finalize_dataset(*args, **kwargs):
+        pass
+
+    def delete_episodes_from_dataset(*args, **kwargs):
+        raise RuntimeError(
+            "Dataset support is unavailable because the installed LeRobot "
+            "version is newer than the dataset API expected by Telerobot."
+        )
 from telerobot.logger import get_logger, log_message, maybe_log_loop_timing
 from telerobot.server import setup_webxr_server, setup_websocket_server
 
@@ -74,11 +105,27 @@ def main():
     config_path = getattr(args, "config", DEFAULT_CONFIG_PATH)
     duo_robot, cfg = load_robot(config_path)
 
-    camera_server = setup_webxr_server(duo_robot, logger, dataset_configured=cfg.dataset is not None)
+
+    camera_server = setup_webxr_server(
+    duo_robot,
+    logger,
+    dataset_configured=(
+        DATASET_AVAILABLE
+        and cfg.dataset is not None
+    ),
+    )
     teleop_device = setup_websocket_server()
 
     controller = build_controller(duo_robot, cfg)
-    dataset = setup_dataset(duo_robot, cfg, logger)
+
+    dataset = None
+
+    if DATASET_AVAILABLE:
+        dataset = setup_dataset(
+            duo_robot,
+            cfg,
+            logger,
+        )
 
     # Connect to the robot
     duo_robot.connect()
@@ -164,9 +211,16 @@ def main():
 
     except KeyboardInterrupt:
         log_message(logger, "\nStopping teleop...")
-    finally:
-        finalize_dataset(dataset, push_to_hub, logger)
 
+    finally:
+
+        if DATASET_AVAILABLE:
+
+            finalize_dataset(
+                dataset,
+                push_to_hub,
+                logger,
+            )
 
 if __name__ == "__main__":
     main()
