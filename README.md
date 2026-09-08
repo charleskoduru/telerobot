@@ -17,6 +17,11 @@ openssl req \
 -subj "/CN=localhost"
 ```
 
+## Git Pull
+
+```bash
+git pull origin main
+``` 
 ## Calibrate the arm 
 
 ```bash 
