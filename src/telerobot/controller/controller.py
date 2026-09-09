@@ -110,7 +110,17 @@ class SingleController(Controller):
         return {self.arm_name: self.robot.get_observation()}
 
     def process_vr_observation(self, vr_obs: dict) -> tuple[RobotObservation, RobotAction] | None:
-        controller_obs = copy.deepcopy(vr_obs[self.arm_name])
+        # Controller data may temporarily be None while the Quest/WebXR
+        # connection is starting, refreshing, or reconnecting.
+        if not isinstance(vr_obs, dict):
+            return None
+
+        raw_controller_obs = vr_obs.get(self.arm_name)
+
+        if not isinstance(raw_controller_obs, dict):
+            return None
+
+        controller_obs = copy.deepcopy(raw_controller_obs)
         enabled = bool(controller_obs.get("enabled", False))
 
         if self.awaiting_recalibration:
