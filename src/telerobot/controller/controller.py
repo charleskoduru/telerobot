@@ -12,7 +12,7 @@ from telerobot.config import ArmConfig, RobotConfig
 from telerobot.controller.vr_processor import build_vr_to_arm_processor
 from telerobot.controller.kinematics import build_kinematics
 
-
+#resets robot joint state
 def _reset_processor_state(processor) -> None:
     """Reset internal processor state: EE latch, last EE position, IK guess, etc."""
     for step in getattr(processor, "steps", []):
@@ -28,7 +28,10 @@ class Controller(ABC):
         self.has_initial_position = True
         self.awaiting_recalibration = False
 
+    #This funcation defines how to intit a robot
     def _build_processor(self, motor_names: list[str], arm_cfg: ArmConfig):
+        #kinematics_solver is used to calculate the joint angles needed to achieve the requested end effector pose. This does not move the robot. 
+        
         kinematics_solver = build_kinematics(
             arm_type=arm_cfg.type,
             motor_names=motor_names,
@@ -44,27 +47,39 @@ class Controller(ABC):
             gripper_speed_factor=arm_cfg.gripper_speed_factor,
         )
 
+    #This funcation's purpose is to init a single or multiple arms using 
+    #the _build_processor funcation.
     @abstractmethod
     def _build_processors(self) -> None:
         pass
 
+    #Save the robot's starting points, so ex once you end the data capture via 
+    # hugging face and click 'save dataset' the robot returns to the initial 
+    #joint position it started. 
     @abstractmethod
     def capture_initial_observations(self) -> None:
         pass
 
+    #Moves robot back to inital joint position and rests the controller state.
     @abstractmethod
     def reset(self) -> None:
         pass
 
+    #sets a new transform frame between the end effector and the vr controller. 
+    #This is used as pressing the A button. 
     @abstractmethod
     def recalibrate(self) -> None:
         pass
 
+    #returns joins and sensor information of an arm. 
     @abstractmethod
     def get_arm_observations(self) -> dict[str, RobotObservation]:
         pass
 
-    @abstractmethod
+    # Uses the VR processor to convert the VR controller pose into a target
+    # robot joint action, sends that action to the robot, and returns both
+    # the robot's current observation and the commanded joint action.
+    abstractmethod
     def process_vr_observation(self, vr_obs: dict) -> tuple[RobotObservation, RobotAction] | None:
         pass
 

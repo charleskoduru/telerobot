@@ -50,6 +50,7 @@ DEFAULT_CONFIG_PATH = str(Path(__file__).parent.parent.parent / "config.yaml")
 def main():
     logger = get_logger()
 
+    #This section enable version of telerobot to be operated: telerobot or telerobot run start the program. Use telerobot --help to see the available commands and options.
     parser = argparse.ArgumentParser(description="Telerobot — VR teleoperation for SO-ARM101")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -101,8 +102,10 @@ def main():
         return
 
     # --- run command ---
-
+    #This sections of the code is responsible for loading the robot configuration, setting up the web servers for VR and teleoperation, building the controller, and initializing the dataset if available. 
     config_path = getattr(args, "config", DEFAULT_CONFIG_PATH)
+
+    #This line add the config.yaml from config.pu using the load_robot funcation. 
     duo_robot, cfg = load_robot(config_path)
 
 
@@ -146,6 +149,9 @@ def main():
     log_message(logger, "Starting teleop loop. Connect your VR headset to teleoperate the robot...")
     loop_count = 0
     last_action_str = "none"
+
+    # Here the code then enters a loop to handle VR observations, control the robot, stream camera frames, and manage dataset recording based on user actions.
+    
     try:
         while True:
             t0 = time.perf_counter()

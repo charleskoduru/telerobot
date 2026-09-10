@@ -20,6 +20,7 @@ from lerobot.robots.bi_so_follower.bi_so_follower import BiSOFollower
 
 
 
+#Defines containers used to setup the robot via congfig.yaml
 
 @dataclass
 class CameraConfig:
@@ -159,6 +160,7 @@ def load_robot(path: str | Path) -> tuple[Robot, RobotConfig]:
     Returns:
         A tuple of (robot_instance, config).
     """
+    #cfg are the values from the config.yaml file.
     cfg = load_config(path)
 
     # Build camera configs
