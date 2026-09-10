@@ -22,6 +22,7 @@ from lerobot.robots.so_follower.robot_kinematic_processor import (
 from lerobot.utils.rotation import Rotation
 
 
+#The MapVRActionToRobotAction converts the VR controller pose into  robot pose.
 @ProcessorStepRegistry.register("map_phone_action_to_robot_action")
 @dataclass
 class MapVRActionToRobotAction(RobotActionProcessorStep):
@@ -88,7 +89,7 @@ class MapVRActionToRobotAction(RobotActionProcessorStep):
 
         return features
 
-
+#defines using vr controller robot pose to calculate the IK. 
 def build_vr_to_arm_processor(
     motor_names: list[str],
     kinematics_solver: RobotKinematics,
@@ -102,7 +103,7 @@ def build_vr_to_arm_processor(
     return RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction](
         steps=[
             MapVRActionToRobotAction(),
-
+            #this find the end pose
             EEReferenceAndDelta(
                 kinematics=kinematics_solver,
                 end_effector_step_sizes=end_effector_step_sizes,
@@ -119,7 +120,7 @@ def build_vr_to_arm_processor(
             GripperVelocityToJoint(
                 speed_factor=gripper_speed_factor,
             ),
-
+            #calculates the joint angles need to reach end pose
             InverseKinematicsEEToJoints(
                 kinematics=kinematics_solver,
                 motor_names=motor_names,

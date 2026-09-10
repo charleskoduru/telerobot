@@ -28,10 +28,10 @@ class Controller(ABC):
         self.has_initial_position = True
         self.awaiting_recalibration = False
 
-    #This funcation defines how to intit a robot
+    #This funcation defines how to init a robot
     def _build_processor(self, motor_names: list[str], arm_cfg: ArmConfig):
         #kinematics_solver is used to calculate the joint angles needed to achieve the requested end effector pose. This does not move the robot. 
-        
+
         kinematics_solver = build_kinematics(
             arm_type=arm_cfg.type,
             motor_names=motor_names,
