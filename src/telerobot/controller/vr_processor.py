@@ -48,10 +48,10 @@ class MapVRActionToRobotAction(RobotActionProcessorStep):
 
         rot = Rotation.from_quat(rot)
         # Negative is clockwise when viewed along the positive Y axis toward the origin.
-        y_offset = Rotation.from_rotvec([-np.pi / 2.0, 0.0, 0.0])
+        x_offset = Rotation.from_rotvec([np.pi / 2.0, 0.0, 0.0])
 
         # Change the controller's coordinate frame while preserving identity at Grip-down.
-        rot_adjusted = y_offset * rot * y_offset.inv()
+        rot_adjusted = x_offset * rot * x_offset.inv()
         rotvec = rot_adjusted.as_rotvec()
 
         gripper_vel = joystickX
