@@ -28,11 +28,12 @@ arms:
     regularization: 1.0e-3 #adjust IK smoothing/stability (lower = more aggressive, higher = more stable), .5e-3, 1.0e-3, 3.0e-3 MAX: 
     end_effector_step_sizes: {  x: 0.45, y: 0.45, z: 0.45 } #scale between xr controller pose vs. robot end effector pose (lower = less sensitive, higher = more sensitive) 
     end_effector_bounds: #allowable workspace for the robot end effector (in meters), measure from the robot base j1. 
-      min: [0.05, -0.20, -0.025]
-      max: [0.40,  0.20, 0.30]
+        min: [-0.0394, -0.2394, -0.0478]
+        max: [0.3967, 0.343, 0.4507]
+      # min: [0.05, -0.20, -0.025]
+      # max: [0.40,  0.20, 0.30]
 
-      #min: [-0.0396, -0.3102, -0.0706]
-      #max: [0.3943, 0.3104, 0.4228]
+
 
   
     max_ee_step_m: 0.04 # from 0.2, limit how much the end effectors moves per frame (in meters) to avoid overshooting and instability

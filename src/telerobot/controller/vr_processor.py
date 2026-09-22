@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import numpy as np 
 
 from lerobot.configs.types import FeatureType, PipelineFeatureType, PolicyFeature
 from lerobot.model.kinematics import RobotKinematics
@@ -46,7 +47,12 @@ class MapVRActionToRobotAction(RobotActionProcessorStep):
             raise ValueError("pos and rot must be present in action")
 
         rot = Rotation.from_quat(rot)
-        rotvec = rot.as_rotvec()
+        # Negative is clockwise when viewed along the positive Y axis toward the origin.
+        y_offset = Rotation.from_rotvec([0.0, -np.pi / 2.0, 0.0])
+
+        # Change the controller's coordinate frame while preserving identity at Grip-down.
+        rot_adjusted = y_offset * rot * y_offset.inv()
+        rotvec = rot_adjusted.as_rotvec()
 
         gripper_vel = joystickX
 
