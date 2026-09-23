@@ -12,12 +12,16 @@ cameras:
     width: 640
     height: 480
     fps: 30
+    vr_gamma: 0.75  # 1.0 = original image; lower values brighten the headset view
+
 
   bevCam:
     index: "/dev/video8"
     width: 640
     height: 480
     fps: 30
+    vr_gamma: 0.75  # 1.0 = original image; lower values brighten the headset view
+
 
 arms:
   right:  # change to "left" if using your left VR controller

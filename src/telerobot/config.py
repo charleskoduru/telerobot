@@ -25,10 +25,11 @@ from lerobot.robots.bi_so_follower.bi_so_follower import BiSOFollower
 @dataclass
 class CameraConfig:
     """Configuration for a single camera."""
-    index: int
+    index: int | str
     width: int = 640
     height: int = 480
     fps: int = 30
+    vr_gamma: float = 1.0  # Less than 1 brightens the headset feed only.
 
 
 @dataclass
@@ -93,11 +94,15 @@ def load_config(path: str | Path) -> RobotConfig:
     # Parse cameras
     cameras: dict[str, CameraConfig] = {}
     for name, cam in raw.get("cameras", {}).items():
+        vr_gamma = float(cam.get("vr_gamma", 1.0))
+        if not 0.1 <= vr_gamma <= 3.0:
+            raise ValueError(f"Camera '{name}': vr_gamma must be between 0.1 and 3.0.")
         cameras[name] = CameraConfig(
             index=cam["index"],
             width=cam.get("width", 640),
             height=cam.get("height", 480),
             fps=cam.get("fps", 30),
+            vr_gamma=vr_gamma,
         )
 
     # Parse arms
