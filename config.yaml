@@ -13,18 +13,18 @@ cameras:
     height: 480
     fps: 30
 
-  # main:
-  #   index: "/dev/video0"
-  #   width: 1280
-  #   height: 720
-  #   fps: 10
+  bevCam:
+    index: "/dev/video8"
+    width: 640
+    height: 480
+    fps: 30
 
 arms:
   right:  # change to "left" if using your left VR controller
     type: so100
     port: /dev/ttyACM0
     use_degrees: true
-    cameras: [gripperCam] # [gripperCam, main]
+    cameras: [gripperCam, bevCam]
     regularization: 1.0e-3 #adjust IK smoothing/stability (lower = more aggressive, higher = more stable), .5e-3, 1.0e-3, 3.0e-3 MAX: 
     end_effector_step_sizes: {  x: 0.45, y: 0.45, z: 0.45 } #scale between xr controller pose vs. robot end effector pose (lower = less sensitive, higher = more sensitive) 
     end_effector_bounds: #allowable workspace for the robot end effector (in meters), measure from the robot base j1. 
@@ -41,7 +41,7 @@ arms:
 
 #Uncomment to enable episode recording to a LeRobot dataset
 dataset:
-    repo_id: "charlieK123/vr_test_single_arm"
-    single_task: "Grab the cube"
+    repo_id: "charlieK123/pickingUpForceps"
+    single_task: "forcep pick and place"
     push_to_hub: true  # set to true to push the dataset to Hugging Face Hub on save
     #root: "./datasets"  # optional: override dataset storage path
