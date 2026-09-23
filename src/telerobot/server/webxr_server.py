@@ -137,6 +137,8 @@ class WebXRServer:
         """Handle WebRTC offer."""
         params = await request.json()
         camera_name = params.get('camera', 'default')
+        if camera_name not in self.camera_tracks:
+            return web.json_response({"error": f"Unknown camera: {camera_name}"}, status=404)
         
         offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
         
@@ -151,9 +153,8 @@ class WebXRServer:
                 if pc in self.pcs:
                     self.pcs.discard(pc)
         
-        # Add video track
-        if camera_name in self.camera_tracks:
-            pc.addTrack(self.camera_tracks[camera_name])
+        # Each configured camera has a separate track and a separate offer.
+        pc.addTrack(self.camera_tracks[camera_name])
         
         await pc.setRemoteDescription(offer)
         answer = await pc.createAnswer()

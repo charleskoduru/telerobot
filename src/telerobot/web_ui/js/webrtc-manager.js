@@ -13,6 +13,7 @@ const WebRTCManager = {
   async getCameras() {
     try {
       const response = await fetch(`${this.serverUrl}/cameras`);
+      if (!response.ok) throw new Error(`Camera list: HTTP ${response.status}`);
       return await response.json();
     } catch (error) {
       console.error('Failed to fetch cameras:', error);
@@ -27,14 +28,16 @@ const WebRTCManager = {
    * @returns {Promise<boolean>} True if connection was successful
    */
   async connectToCamera(cameraName, videoElement) {
+    let pc;
     try {
-      const pc = new RTCPeerConnection({
+      this.disconnect(cameraName);
+      pc = new RTCPeerConnection({
         iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
       });
 
       pc.ontrack = (event) => {
         console.log(`Received track for camera: ${cameraName}`);
-        videoElement.srcObject = event.streams[0];
+        videoElement.srcObject = event.streams[0] || new MediaStream([event.track]);
         videoElement.play().catch(e => console.log('Autoplay prevented:', e));
       };
 
@@ -46,18 +49,36 @@ const WebRTCManager = {
       pc.addTransceiver('video', { direction: 'recvonly' });
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+      // /offer has no trickle-ICE endpoint; send the SDP after local ICE
+      // candidates have been collected (important on the Quest/local Wi-Fi).
+      if (pc.iceGatheringState !== 'complete') {
+        await new Promise(resolve => {
+          const timeout = setTimeout(done, 4000);
+          function done() {
+            clearTimeout(timeout);
+            pc.removeEventListener('icegatheringstatechange', check);
+            resolve();
+          }
+          function check() {
+            if (pc.iceGatheringState === 'complete') done();
+          }
+          pc.addEventListener('icegatheringstatechange', check);
+          check();
+        });
+      }
 
       // Send offer to server
       const response = await fetch(`${this.serverUrl}/offer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          sdp: offer.sdp,
-          type: offer.type,
+          sdp: pc.localDescription.sdp,
+          type: pc.localDescription.type,
           camera: cameraName
         })
       });
 
+      if (!response.ok) throw new Error(`Camera ${cameraName}: HTTP ${response.status}`);
       const answer = await response.json();
       await pc.setRemoteDescription(new RTCSessionDescription(answer));
 
@@ -65,6 +86,7 @@ const WebRTCManager = {
       console.log(`Connected to camera: ${cameraName}`);
       return true;
     } catch (error) {
+      if (pc) pc.close();
       console.error(`Failed to connect to camera ${cameraName}:`, error);
       return false;
     }

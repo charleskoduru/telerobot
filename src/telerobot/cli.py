@@ -149,6 +149,7 @@ def main():
     log_message(logger, "Starting teleop loop. Connect your VR headset to teleoperate the robot...")
     loop_count = 0
     last_action_str = "none"
+    camera_read_warned = set()
 
     # Here the code then enters a loop to handle VR observations, control the robot, stream camera frames, and manage dataset recording based on user actions.
     
@@ -216,16 +217,19 @@ def main():
 
             # Always stream cameras — reuse obs frames when available, otherwise read directly
             for cam_name, cam in duo_robot.cameras.items():
-
-                if camera_frames:
-                    frame = camera_frames.get(cam_name)
-                else:
+                frame = camera_frames.get(cam_name)
+                if frame is None:
                     try:
                         frame = cam.read_latest()
-                    except Exception:
+                    except Exception as exc:
+                        if cam_name not in camera_read_warned:
+                            logger.warning("Camera %s could not be read: %s", cam_name, exc)
+                            camera_read_warned.add(cam_name)
                         continue
 
-                camera_server.update_camera_frame(cam_name, frame)
+                if frame is not None:
+                    camera_read_warned.discard(cam_name)
+                    camera_server.update_camera_frame(cam_name, frame)
             t_camera = time.perf_counter()  # TODO: Remove timing debug
 
             precise_sleep(max(1.0 / cfg.fps - (time.perf_counter() - t0), 0.0))

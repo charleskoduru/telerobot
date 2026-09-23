@@ -3,8 +3,8 @@
  * Creates a single unified panel containing all camera streams
  * Layout rules:
  * - 1 camera: fills the panel
- * - 2 cameras: "main" on top, other below, equal size
- * - 3+ cameras: "main" on top (full width), others split the bottom row
+ * - 2 cameras: gripperCam on top, bevCam below, equal size
+ * - 3+ cameras: main on top (full width), others split the bottom row
  */
 AFRAME.registerComponent('video-panel', {
   schema: {
@@ -14,14 +14,13 @@ AFRAME.registerComponent('video-panel', {
     maxHeight: { type: 'number', default: 1.8 },   // Max panel height
     smoothing: { type: 'number', default: 0.08 },  // Look-at smoothing
     padding: { type: 'number', default: 0.02 },    // Padding between streams
-    mainCameraName: { type: 'string', default: 'main' }  // Name of the main camera
+    mainCameraName: { type: 'string', default: 'gripperCam' }
   },
 
   init: async function() {
     this.panel = null;
     this.videoStreams = [];
-    this.streamDimensions = {};  // Store video dimensions as they load
-    this.streamsReady = 0;
+    this.removed = false;
     
     // Wait for scene to be fully loaded
     if (this.el.sceneEl.hasLoaded) {
@@ -43,7 +42,6 @@ AFRAME.registerComponent('video-panel', {
 
     // Sort cameras: main first, then others
     const sortedCameras = this.sortCameras(cameras);
-    this.totalCameras = sortedCameras.length;
 
     // Create the main panel container
     this.createPanelContainer();
@@ -52,6 +50,14 @@ AFRAME.registerComponent('video-panel', {
     sortedCameras.forEach((cameraName, index) => {
       this.createVideoStream(cameraName, index);
     });
+    // Draw both tiles immediately. A slow or disconnected camera must not hide
+    // the other camera; each tile becomes live when its own video is ready.
+    this.layoutStreams();
+    this.videoStreams.forEach(stream => {
+      if (stream.videoEl.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        this.onStreamReady(stream);
+      }
+    });
   },
 
   /**
@@ -59,7 +65,7 @@ AFRAME.registerComponent('video-panel', {
    */
   sortCameras: function(cameras) {
     const mainName = this.data.mainCameraName.toLowerCase();
-    return cameras.sort((a, b) => {
+    return [...cameras].sort((a, b) => {
       const aLower = a.toLowerCase();
       const bLower = b.toLowerCase();
       
@@ -142,25 +148,17 @@ AFRAME.registerComponent('video-panel', {
 
     this.videoStreams.push(streamData);
 
-    // Create hidden video element
+    // A-Frame can use this same video element directly as its texture.
     const videoEl = document.createElement('video');
     videoEl.id = `video-stream-${index}`;
     videoEl.setAttribute('playsinline', '');
     videoEl.setAttribute('autoplay', '');
     videoEl.muted = true;
-    videoEl.style.display = 'none';
-    document.body.appendChild(videoEl);
+    const assets = document.querySelector('a-assets') || this.createAssets();
+    assets.appendChild(videoEl);
     streamData.videoEl = videoEl;
 
-    // Create placeholder text
-    const textEl = document.createElement('a-text');
-    textEl.setAttribute('value', `${cameraName}\nConnecting...`);
-    textEl.setAttribute('align', 'center');
-    textEl.setAttribute('position', '0 0 0.03');
-    textEl.setAttribute('width', '1.5');
-    textEl.setAttribute('color', '#ffffff');
-    this.panel.appendChild(textEl);
-    streamData.textEl = textEl;
+    videoEl.addEventListener('loadeddata', () => this.onStreamReady(streamData));
 
     console.log(`Creating stream ${index} for camera: ${cameraName}`);
 
@@ -171,24 +169,15 @@ AFRAME.registerComponent('video-panel', {
   connectToStream: async function(streamData) {
     const connected = await WebRTCManager.connectToCamera(streamData.cameraName, streamData.videoEl);
 
-    if (connected) {
-      streamData.videoEl.addEventListener('loadeddata', () => {
-        this.onStreamReady(streamData);
-      });
-
-      // Backup timeout
-      setTimeout(() => {
-        if (!streamData.ready) {
-          this.onStreamReady(streamData);
-        }
-      }, 3000);
-    } else {
+    if (!connected && !this.removed && streamData.textEl) {
       streamData.textEl.setAttribute('value', `${streamData.cameraName}\nFailed to connect`);
+    } else if (streamData.videoEl.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      this.onStreamReady(streamData);
     }
   },
 
   onStreamReady: function(streamData) {
-    if (streamData.ready) return;
+    if (this.removed || streamData.ready || !streamData.planeEl) return;
     streamData.ready = true;
 
     // Get video dimensions
@@ -197,11 +186,9 @@ AFRAME.registerComponent('video-panel', {
 
     console.log(`Stream ${streamData.index} (${streamData.cameraName}) ready: ${streamData.width}x${streamData.height}`);
 
-    this.streamsReady++;
-
-    // When all streams are ready, layout the panel
-    if (this.streamsReady === this.totalCameras) {
-      this.layoutStreams();
+    streamData.planeEl.setAttribute('material', `shader: flat; src: #${streamData.videoEl.id}; side: front`);
+    if (streamData.textEl && streamData.textEl.parentNode) {
+      streamData.textEl.parentNode.removeChild(streamData.textEl);
     }
   },
 
@@ -336,31 +323,24 @@ AFRAME.registerComponent('video-panel', {
   createVideoPlane: function(layout) {
     const { stream, x, y, width, height } = layout;
 
-    // Remove placeholder text
-    if (stream.textEl && stream.textEl.parentNode) {
-      stream.textEl.parentNode.removeChild(stream.textEl);
-    }
-
-    // Create A-Frame asset for the video
-    const assets = document.querySelector('a-assets') || this.createAssets();
-
-    const assetVideo = document.createElement('video');
-    assetVideo.id = `asset-video-stream-${stream.index}`;
-    assetVideo.srcObject = stream.videoEl.srcObject;
-    assetVideo.setAttribute('playsinline', '');
-    assetVideo.setAttribute('autoplay', '');
-    assetVideo.muted = true;
-    assets.appendChild(assetVideo);
-    assetVideo.play().catch(e => console.log('Asset video play error:', e));
-
-    // Create video plane
+    // The texture is attached only after loadeddata; until then the tile
+    // visibly reports which camera is still connecting.
     const planeEl = document.createElement('a-plane');
     planeEl.setAttribute('position', `${x} ${y} 0.026`);
     planeEl.setAttribute('width', width);
     planeEl.setAttribute('height', height);
-    planeEl.setAttribute('material', `shader: flat; src: #asset-video-stream-${stream.index}; side: front`);
+    planeEl.setAttribute('material', 'shader: flat; color: #222222; side: front');
     this.panel.appendChild(planeEl);
     stream.planeEl = planeEl;
+
+    const textEl = document.createElement('a-text');
+    textEl.setAttribute('value', `${stream.cameraName}\nConnecting...`);
+    textEl.setAttribute('align', 'center');
+    textEl.setAttribute('position', `${x} ${y} 0.029`);
+    textEl.setAttribute('width', Math.min(width, 1.5));
+    textEl.setAttribute('color', '#ffffff');
+    this.panel.appendChild(textEl);
+    stream.textEl = textEl;
 
     // Add label at the top of this stream with semi-transparent background
     const labelHeight = 0.08;
@@ -401,14 +381,14 @@ AFRAME.registerComponent('video-panel', {
    * Remove all panels
    */
   clearPanels: function() {
-    // Clean up video elements
+    // Release the old peer connections and textures before re-creating tiles.
     this.videoStreams.forEach(stream => {
+      WebRTCManager.disconnect(stream.cameraName);
       if (stream.videoEl && stream.videoEl.parentNode) {
         stream.videoEl.parentNode.removeChild(stream.videoEl);
       }
     });
     this.videoStreams = [];
-    this.streamsReady = 0;
 
     while (this.el.firstChild) {
       this.el.removeChild(this.el.firstChild);
@@ -422,5 +402,10 @@ AFRAME.registerComponent('video-panel', {
   refresh: async function() {
     this.clearPanels();
     await this.createUnifiedPanel();
+  },
+
+  remove: function() {
+    this.removed = true;
+    this.clearPanels();
   }
 });
