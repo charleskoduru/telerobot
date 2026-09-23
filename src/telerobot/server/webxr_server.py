@@ -58,9 +58,20 @@ class WebXRServer:
     
     async def health_check(self, request):
         """Simple health check endpoint."""
-        return web.json_response({"status": "ok", "cameras": list(self.camera_tracks.keys())})
+        return web.json_response({
+            "status": "ok",
+            "cameras": list(self.camera_tracks.keys()),
+            "vr_image_settings": self.camera_image_settings,
+        })
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 8765, ssl_context=None, dataset_configured: bool = False, camera_gamma: Optional[Dict[str, float]] = None):
+    def __init__(
+        self,
+        host: str = "0.0.0.0",
+        port: int = 8765,
+        ssl_context=None,
+        dataset_configured: bool = False,
+        camera_image_settings: Optional[Dict[str, Dict[str, float]]] = None,
+    ):
         self.host = host
         self.port = port
         self.ssl_context = ssl_context
@@ -68,15 +79,27 @@ class WebXRServer:
         self.app = web.Application()
         self.pcs: set = set()
         self.camera_tracks: Dict[str, CameraStreamTrack] = {}
-        # Lookup tables brighten dark headset video without altering the
-        # original observations used for recording or robot control.
+        # These adjustments are applied to a copy used by WebRTC. Robot
+        # observations and dataset frames keep their original pixels.
+        self.camera_image_settings = {
+            name: {
+                "gamma": float(settings.get("gamma", 1.0)),
+                "gain": float(settings.get("gain", 1.0)),
+                "brightness": int(settings.get("brightness", 0)),
+            }
+            for name, settings in (camera_image_settings or {}).items()
+        }
         self.camera_gamma_luts = {
             name: np.clip(
-                np.round(255 * (np.arange(256, dtype=np.float32) / 255) ** gamma),
+                np.round(
+                    255
+                    * (np.arange(256, dtype=np.float32) / 255)
+                    ** settings["gamma"]
+                ),
                 0, 255,
             ).astype(np.uint8)
-            for name, gamma in (camera_gamma or {}).items()
-            if gamma != 1.0
+            for name, settings in self.camera_image_settings.items()
+            if settings["gamma"] != 1.0
         }
         
         # Setup CORS
@@ -115,9 +138,17 @@ class WebXRServer:
     def update_camera_frame(self, camera_name: str, frame: np.ndarray):
         """Update frame for a specific camera."""
         if camera_name in self.camera_tracks and frame is not None:
+            settings = self.camera_image_settings.get(camera_name, {})
+            gain = float(settings.get("gain", 1.0))
+            brightness = int(settings.get("brightness", 0))
+
+            if gain != 1.0 or brightness != 0:
+                frame = cv2.convertScaleAbs(frame, alpha=gain, beta=brightness)
+
             lut = self.camera_gamma_luts.get(camera_name)
             if lut is not None:
                 frame = cv2.LUT(frame, lut)
+
             self.camera_tracks[camera_name].update_frame(frame)
     
     async def index(self, request):
@@ -134,7 +165,11 @@ class WebXRServer:
             )
             html_content = html_content.replace('<script src="js/websocket-manager.js"></script>',
                 config_script + '    <script src="js/websocket-manager.js"></script>')
-            return web.Response(text=html_content, content_type='text/html')
+            return web.Response(
+                text=html_content,
+                content_type='text/html',
+                headers={"Cache-Control": "no-store"},
+            )
         except FileNotFoundError:
             return web.Response(
                 text="<h1>Error: web-ui/index.html not found</h1>", 
@@ -246,7 +281,14 @@ def create_ssl_context(cert_file: str, key_file: str):
     return ssl_context
 
 
-def create_webxr_server(camera_names, use_https=False, cert_file=None, key_file=None, dataset_configured: bool = False, camera_gamma: Optional[Dict[str, float]] = None) -> WebXRServer:
+def create_webxr_server(
+    camera_names,
+    use_https=False,
+    cert_file=None,
+    key_file=None,
+    dataset_configured: bool = False,
+    camera_image_settings: Optional[Dict[str, Dict[str, float]]] = None,
+) -> WebXRServer:
     """Create and configure the WebXR server."""
     ssl_context = None
     
@@ -262,7 +304,11 @@ def create_webxr_server(camera_names, use_https=False, cert_file=None, key_file=
         ssl_context = create_ssl_context(cert_file, key_file)
         print(f"✅ SSL enabled with {cert_file}")
     
-    server = WebXRServer(ssl_context=ssl_context, dataset_configured=dataset_configured, camera_gamma=camera_gamma)
+    server = WebXRServer(
+        ssl_context=ssl_context,
+        dataset_configured=dataset_configured,
+        camera_image_settings=camera_image_settings,
+    )
     
     # Add your camera streams
     for camera_name in camera_names:
@@ -271,7 +317,12 @@ def create_webxr_server(camera_names, use_https=False, cert_file=None, key_file=
     return server
 
 
-def setup_webxr_server(robot, logger, dataset_configured: bool = False, camera_gamma: Optional[Dict[str, float]] = None):
+def setup_webxr_server(
+    robot,
+    logger,
+    dataset_configured: bool = False,
+    camera_image_settings: Optional[Dict[str, Dict[str, float]]] = None,
+):
     """Initialize and start the WebXR server in a background thread."""
     use_https = True  # Set to False for HTTP
     cert_file = "ssl_cert/server.crt"
@@ -283,7 +334,7 @@ def setup_webxr_server(robot, logger, dataset_configured: bool = False, camera_g
         cert_file=cert_file,
         key_file=key_file,
         dataset_configured=dataset_configured,
-        camera_gamma=camera_gamma,
+        camera_image_settings=camera_image_settings,
     )
 
     server_thread = threading.Thread(target=camera_server.run_in_thread, daemon=True)
@@ -294,6 +345,18 @@ def setup_webxr_server(robot, logger, dataset_configured: bool = False, camera_g
         log_message(logger, "📱 Access from Quest 3: https://YOUR_IP:8765")
     else:
         log_message(logger, "🎥 HTTP WebXR server started on http://0.0.0.0:8765")
+
+    for camera_name, settings in (camera_image_settings or {}).items():
+        log_message(
+            logger,
+            "🌤️ VR image %s: gamma=%.2f, gain=%.2f, brightness=%d"
+            % (
+                camera_name,
+                settings["gamma"],
+                settings["gain"],
+                settings["brightness"],
+            ),
+        )
 
     return camera_server
 

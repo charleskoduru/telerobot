@@ -30,6 +30,8 @@ class CameraConfig:
     height: int = 480
     fps: int = 30
     vr_gamma: float = 1.0  # Less than 1 brightens the headset feed only.
+    vr_gain: float = 1.0  # Multiplies pixel values before gamma correction.
+    vr_brightness: int = 0  # Adds a fixed offset before gamma correction.
 
 
 @dataclass
@@ -95,14 +97,22 @@ def load_config(path: str | Path) -> RobotConfig:
     cameras: dict[str, CameraConfig] = {}
     for name, cam in raw.get("cameras", {}).items():
         vr_gamma = float(cam.get("vr_gamma", 1.0))
+        vr_gain = float(cam.get("vr_gain", 1.0))
+        vr_brightness = int(cam.get("vr_brightness", 0))
         if not 0.1 <= vr_gamma <= 3.0:
             raise ValueError(f"Camera '{name}': vr_gamma must be between 0.1 and 3.0.")
+        if not 0.1 <= vr_gain <= 4.0:
+            raise ValueError(f"Camera '{name}': vr_gain must be between 0.1 and 4.0.")
+        if not 0 <= vr_brightness <= 100:
+            raise ValueError(f"Camera '{name}': vr_brightness must be between 0 and 100.")
         cameras[name] = CameraConfig(
             index=cam["index"],
             width=cam.get("width", 640),
             height=cam.get("height", 480),
             fps=cam.get("fps", 30),
             vr_gamma=vr_gamma,
+            vr_gain=vr_gain,
+            vr_brightness=vr_brightness,
         )
 
     # Parse arms

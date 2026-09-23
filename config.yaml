@@ -12,7 +12,10 @@ cameras:
     width: 640
     height: 480
     fps: 30
-    vr_gamma: 0.5  # 1.0 = original image; lower values brighten the headset view
+    # These three values affect only the video sent to the VR headset.
+    vr_gamma: 0.70       # Lower values brighten shadows.
+    vr_gain: 1.25        # Multiplies the full image brightness.
+    vr_brightness: 25    # Adds brightness after gain (0-100).
 
 
   bevCam:
@@ -20,7 +23,9 @@ cameras:
     width: 640
     height: 480
     fps: 30
-    vr_gamma: 0.5  # 1.0 = original image; lower values brighten the headset view
+    vr_gamma: 0.70
+    vr_gain: 1.25
+    vr_brightness: 25
 
 
 arms:

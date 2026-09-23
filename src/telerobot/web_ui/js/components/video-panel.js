@@ -186,7 +186,33 @@ AFRAME.registerComponent('video-panel', {
 
     console.log(`Stream ${streamData.index} (${streamData.cameraName}) ready: ${streamData.width}x${streamData.height}`);
 
-    streamData.planeEl.setAttribute('material', `shader: flat; src: #${streamData.videoEl.id}; side: front`);
+    // Video is display color data. Mark the texture as sRGB and keep it out of
+    // renderer tone mapping so the Quest does not make the feed look darker.
+    const applyVideoColorSettings = () => {
+      const mesh = streamData.planeEl.getObject3D('mesh');
+      const material = mesh && mesh.material;
+      const texture = material && material.map;
+
+      if (!material || !texture) return;
+
+      material.toneMapped = false;
+      if ('colorSpace' in texture && THREE.SRGBColorSpace) {
+        texture.colorSpace = THREE.SRGBColorSpace;
+      } else if ('encoding' in texture && THREE.sRGBEncoding) {
+        texture.encoding = THREE.sRGBEncoding;
+      }
+      texture.needsUpdate = true;
+      material.needsUpdate = true;
+    };
+
+    streamData.planeEl.addEventListener('materialtextureloaded', applyVideoColorSettings);
+    streamData.planeEl.addEventListener('materialvideoloadeddata', applyVideoColorSettings);
+    streamData.planeEl.setAttribute(
+      'material',
+      `shader: flat; src: #${streamData.videoEl.id}; side: front; color: #FFFFFF; toneMapped: false; fog: false`
+    );
+    requestAnimationFrame(applyVideoColorSettings);
+    setTimeout(applyVideoColorSettings, 500);
     if (streamData.textEl && streamData.textEl.parentNode) {
       streamData.textEl.parentNode.removeChild(streamData.textEl);
     }

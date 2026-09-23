@@ -17,7 +17,7 @@
     <script src="js/webrtc-manager.js"></script>
     <script src="js/components/laser-visibility.js"></script>
     <script src="js/components/look-at-headset.js"></script>
-    <script src="js/components/video-panel.js"></script>
+    <script src="js/components/video-panel.js?v=brightness-v2"></script>
     <script src="js/components/controller-axes.js"></script>
     <script src="js/components/vr-button.js"></script>
     <script src="js/components/websocket-panel.js"></script>
@@ -28,6 +28,7 @@
     <a-scene 
       passthrough-manager
       xr-mode-ui="XRMode: ar"
+      renderer="colorManagement: true; toneMapping: no; exposure: 1"
       background="transparent: true">
       <a-assets></a-assets>
 

@@ -112,7 +112,14 @@ def main():
     camera_server = setup_webxr_server(
     duo_robot,
     logger,
-    camera_gamma={name: cam.vr_gamma for name, cam in cfg.cameras.items()},
+    camera_image_settings={
+        name: {
+            "gamma": cam.vr_gamma,
+            "gain": cam.vr_gain,
+            "brightness": cam.vr_brightness,
+        }
+        for name, cam in cfg.cameras.items()
+    },
     dataset_configured=(
         DATASET_AVAILABLE
         and cfg.dataset is not None
