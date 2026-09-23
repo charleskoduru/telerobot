@@ -12,7 +12,7 @@ cameras:
     width: 640
     height: 480
     fps: 30
-    vr_gamma: 0.75  # 1.0 = original image; lower values brighten the headset view
+    vr_gamma: 0.5  # 1.0 = original image; lower values brighten the headset view
 
 
   bevCam:
@@ -20,7 +20,7 @@ cameras:
     width: 640
     height: 480
     fps: 30
-    vr_gamma: 0.75  # 1.0 = original image; lower values brighten the headset view
+    vr_gamma: 0.5  # 1.0 = original image; lower values brighten the headset view
 
 
 arms:
