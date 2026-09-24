@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
+
+from lerobot.cameras.opencv.configuration_opencv import (
+    OpenCVCameraConfig,
+    Cv2Backends,
+)
 
 from lerobot.robots.robot import Robot
 from lerobot.robots.so_follower import SOFollower
@@ -160,6 +164,17 @@ def load_config(path: str | Path) -> RobotConfig:
     )
 
 
+def get_v4l2_index(value: int | str) -> int:
+    """Convert /dev/video2 into the numeric V4L2 index 2."""
+    if isinstance(value, int):
+        return value
+
+    prefix = "/dev/video"
+    if value.startswith(prefix) and value[len(prefix):].isdigit():
+        return int(value[len(prefix):])
+
+    raise ValueError(f"Invalid V4L2 camera: {value!r}")
+
 def load_robot(path: str | Path) -> tuple[Robot, RobotConfig]:
     """Load config and build a ready-to-use robot.
 
@@ -178,10 +193,12 @@ def load_robot(path: str | Path) -> tuple[Robot, RobotConfig]:
     # Build camera configs
     camera_configs = {
         name: OpenCVCameraConfig(
-            index_or_path=cam.index,
+            index_or_path=get_v4l2_index(cam.index),
             width=cam.width,
             height=cam.height,
             fps=cam.fps,
+            backend=Cv2Backends.V4L2,
+            fourcc="MJPG",
         )
         for name, cam in cfg.cameras.items()
     }
