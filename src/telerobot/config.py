@@ -197,8 +197,6 @@ def load_robot(path: str | Path) -> tuple[Robot, RobotConfig]:
             width=cam.width,
             height=cam.height,
             fps=cam.fps,
-            backend=Cv2Backends.V4L2,
-            fourcc="MJPG",
         )
         for name, cam in cfg.cameras.items()
     }
