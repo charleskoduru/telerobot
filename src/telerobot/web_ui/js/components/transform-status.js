@@ -39,11 +39,7 @@ AFRAME.registerComponent('transform-status', {
     this.panel.setAttribute('draggable', '');
     this.panel.setAttribute('look-at-headset', 'smoothing: 0.05');
 
-    const badge = document.createElement('a-circle');
-    badge.setAttribute('radius', '0.045');
-    badge.setAttribute('position', '-0.29 0 0.013');
-    badge.setAttribute('color', '#E8EDF5');
-    this.panel.appendChild(badge);
+
 
     const badgeText = document.createElement('a-text');
     badgeText.setAttribute('value', 'A');

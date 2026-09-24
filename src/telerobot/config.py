@@ -8,7 +8,7 @@ from typing import Any
 
 import yaml
 
-from lerobot.cameras.opencv.configuration_opencv import (OpenCVCameraConfig,)
+from lerobot.cameras.opencv.configuration_opencv import (OpenCVCameraConfig,Cv2Backends,)
 
 from lerobot.robots.robot import Robot
 from lerobot.robots.so_follower import SOFollower
@@ -185,6 +185,7 @@ def load_robot(path: str | Path) -> tuple[Robot, RobotConfig]:
             width=cam.width,
             height=cam.height,
             fps=cam.fps,
+            backend=Cv2Backends.V4L2,
         )
         for name, cam in cfg.cameras.items()
     }
