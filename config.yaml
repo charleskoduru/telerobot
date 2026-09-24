@@ -8,9 +8,10 @@ robot:
 
 cameras:
   gripperCam:
-    index: "/dev/video0"
+    index: "/dev/video2"
     width: 640
     height: 480
+    fourcc: "MJPG"
     fps: 30
     # These three values affect only the video sent to the VR headset.
     vr_gamma: 0.70       # Lower values brighten shadows.
@@ -19,7 +20,7 @@ cameras:
 
 
   bevCam:
-    index: "/dev/video6"
+    index: "/dev/video8"
     width: 640
     height: 480
     fps: 30

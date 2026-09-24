@@ -27,6 +27,7 @@ class CameraConfig:
     width: int = 640
     height: int = 480
     fps: int = 30
+    fourcc: str | None = None
     vr_gamma: float = 1.0  # Less than 1 brightens the headset feed only.
     vr_gain: float = 1.0  # Multiplies pixel values before gamma correction.
     vr_brightness: int = 0  # Adds a fixed offset before gamma correction.
@@ -92,22 +93,44 @@ def load_config(path: str | Path) -> RobotConfig:
         raw: dict[str, Any] = yaml.safe_load(f)
 
     # Parse cameras
+
     cameras: dict[str, CameraConfig] = {}
+
     for name, cam in raw.get("cameras", {}).items():
         vr_gamma = float(cam.get("vr_gamma", 1.0))
         vr_gain = float(cam.get("vr_gain", 1.0))
         vr_brightness = int(cam.get("vr_brightness", 0))
+
+        fourcc = cam.get("fourcc")
+        if fourcc is not None:
+            fourcc = str(fourcc).upper()
+
+            if len(fourcc) != 4:
+                raise ValueError(
+                    f"Camera '{name}': fourcc must contain exactly four characters."
+                )
+
         if not 0.1 <= vr_gamma <= 3.0:
-            raise ValueError(f"Camera '{name}': vr_gamma must be between 0.1 and 3.0.")
+            raise ValueError(
+                f"Camera '{name}': vr_gamma must be between 0.1 and 3.0."
+            )
+
         if not 0.1 <= vr_gain <= 4.0:
-            raise ValueError(f"Camera '{name}': vr_gain must be between 0.1 and 4.0.")
+            raise ValueError(
+                f"Camera '{name}': vr_gain must be between 0.1 and 4.0."
+            )
+
         if not 0 <= vr_brightness <= 100:
-            raise ValueError(f"Camera '{name}': vr_brightness must be between 0 and 100.")
+            raise ValueError(
+                f"Camera '{name}': vr_brightness must be between 0 and 100."
+            )
+
         cameras[name] = CameraConfig(
             index=cam["index"],
             width=cam.get("width", 640),
             height=cam.get("height", 480),
             fps=cam.get("fps", 30),
+            fourcc=fourcc,
             vr_gamma=vr_gamma,
             vr_gain=vr_gain,
             vr_brightness=vr_brightness,
@@ -185,6 +208,7 @@ def load_robot(path: str | Path) -> tuple[Robot, RobotConfig]:
             width=cam.width,
             height=cam.height,
             fps=cam.fps,
+            fourcc=cam.fourcc,
             backend=Cv2Backends.V4L2,
         )
         for name, cam in cfg.cameras.items()
