@@ -184,6 +184,7 @@ def main():
 
                 if action_str == "recalibrate":
                     controller.recalibrate()
+                    teleop_device.send_transform_status("collecting")
                     
 
                 if action_str == 'reset' and not controller.has_initial_position:
@@ -204,7 +205,14 @@ def main():
                     recording = False
                     finalized_dataset = True
                 else:
+                    was_collecting_pose = getattr(
+                        controller, "awaiting_recalibration", False
+                    )
                     result = controller.process_vr_observation(vr_obs)
+                    if was_collecting_pose and not getattr(
+                        controller, "awaiting_recalibration", False
+                    ):
+                        teleop_device.send_transform_status("finished")
                     t_control = time.perf_counter()  # TODO: Remove timing debug
 
                     if result is not None:

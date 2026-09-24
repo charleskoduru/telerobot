@@ -19,6 +19,7 @@
     <script src="js/components/look-at-headset.js"></script>
     <script src="js/components/video-panel.js?v=brightness-v2"></script>
     <script src="js/components/controller-axes.js"></script>
+    <script src="js/components/transform-status.js"></script>
     <script src="js/components/vr-button.js"></script>
     <script src="js/components/websocket-panel.js"></script>
     <script src="js/components/dataset-panel.js"></script>
@@ -58,6 +59,9 @@
 
       <!-- Dataset recording panel -->
       <a-entity id="dataset-panel" dataset-panel></a-entity>
+
+      <!-- Minimal A-button transform reset status -->
+      <a-entity id="transform-status" transform-status></a-entity>
 
       <!-- Left hand controller with laser ray -->
       <a-entity 

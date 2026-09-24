@@ -21,6 +21,7 @@ class WebSocketManager {
     this.currentAction = 'none'; // Current action: none, reset, start_episode, stop_episode, save_dataset
     this.actionLocked = false; // Prevents multiple actions within 500ms
     this._connectionObservers = []; // Observers for connection state changes
+    this._messageObservers = []; // Observers for messages from the robot server
     
     // Store controller data
     this.controllerData = {
@@ -48,6 +49,16 @@ class WebSocketManager {
    */
   removeConnectionChangeListener(callback) {
     this._connectionObservers = this._connectionObservers.filter(cb => cb !== callback);
+  }
+
+  /** Subscribe to parsed messages received from the robot server. */
+  addMessageListener(callback) {
+    this._messageObservers.push(callback);
+  }
+
+  /** Unsubscribe from robot server messages. */
+  removeMessageListener(callback) {
+    this._messageObservers = this._messageObservers.filter(cb => cb !== callback);
   }
 
   /**
@@ -99,8 +110,15 @@ class WebSocketManager {
         };
 
         this.socket.onmessage = (event) => {
-          // Handle incoming messages if needed
           console.log('📥 Received message:', event.data);
+          try {
+            const message = JSON.parse(event.data);
+            for (const cb of this._messageObservers) {
+              try { cb(message); } catch (e) { console.error('Message observer error:', e); }
+            }
+          } catch (error) {
+            console.warn('⚠️ Ignoring non-JSON WebSocket message:', error);
+          }
         };
 
       } catch (error) {

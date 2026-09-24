@@ -25,6 +25,7 @@ class WebSocketServer:
         self._loop = None
         self._thread = None
         self._ready_event = threading.Event()  # to signal readiness
+        self._clients = set()
         
         # SSL configuration
         self.use_ssl = use_ssl
@@ -49,6 +50,7 @@ class WebSocketServer:
         return self.connected
 
     async def on_observation_received(self, websocket):
+        self._clients.add(websocket)
         try:
             async for message in websocket:
                 self.last_observation = json.loads(message)
@@ -59,6 +61,33 @@ class WebSocketServer:
             print(f"⚠️ Connection closed with error: {e}")
         except Exception as e:
             print(f"❌ Unexpected error in handler: {e}")
+        finally:
+            self._clients.discard(websocket)
+
+    async def _broadcast_transform_status(self, status: str):
+        """Send recalibration progress to every connected headset."""
+        if not self._clients:
+            return
+
+        message = json.dumps({"type": "transform_status", "status": status})
+        clients = tuple(self._clients)
+        results = await asyncio.gather(
+            *(client.send(message) for client in clients),
+            return_exceptions=True,
+        )
+
+        for client, result in zip(clients, results):
+            if isinstance(result, Exception):
+                self._clients.discard(client)
+
+    def send_transform_status(self, status: str):
+        """Thread-safe bridge from the robot loop to the WebSocket loop."""
+        if not self._loop or not self._loop.is_running():
+            return
+        asyncio.run_coroutine_threadsafe(
+            self._broadcast_transform_status(status),
+            self._loop,
+        )
 
     async def start_websocket_server(self):
         protocol = "wss" if self.ssl_context else "ws"

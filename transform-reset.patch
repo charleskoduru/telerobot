@@ -1,0 +1,358 @@
+diff --git a/src/telerobot/cli.py b/src/telerobot/cli.py
+index e21ccfc..6f58d83 100644
+--- a/src/telerobot/cli.py
++++ b/src/telerobot/cli.py
+@@ -184,6 +184,7 @@ def main():
+ 
+                 if action_str == "recalibrate":
+                     controller.recalibrate()
++                    teleop_device.send_transform_status("collecting")
+                     
+ 
+                 if action_str == 'reset' and not controller.has_initial_position:
+@@ -204,7 +205,14 @@ def main():
+                     recording = False
+                     finalized_dataset = True
+                 else:
++                    was_collecting_pose = getattr(
++                        controller, "awaiting_recalibration", False
++                    )
+                     result = controller.process_vr_observation(vr_obs)
++                    if was_collecting_pose and not getattr(
++                        controller, "awaiting_recalibration", False
++                    ):
++                        teleop_device.send_transform_status("finished")
+                     t_control = time.perf_counter()  # TODO: Remove timing debug
+ 
+                     if result is not None:
+@@ -265,4 +273,4 @@ def main():
+             )
+ 
+ if __name__ == "__main__":
+-    main()
+\ No newline at end of file
++    main()
+diff --git a/src/telerobot/server/websocket_server.py b/src/telerobot/server/websocket_server.py
+index 180bfec..f340ec1 100644
+--- a/src/telerobot/server/websocket_server.py
++++ b/src/telerobot/server/websocket_server.py
+@@ -25,6 +25,7 @@ class WebSocketServer:
+         self._loop = None
+         self._thread = None
+         self._ready_event = threading.Event()  # to signal readiness
++        self._clients = set()
+         
+         # SSL configuration
+         self.use_ssl = use_ssl
+@@ -49,6 +50,7 @@ class WebSocketServer:
+         return self.connected
+ 
+     async def on_observation_received(self, websocket):
++        self._clients.add(websocket)
+         try:
+             async for message in websocket:
+                 self.last_observation = json.loads(message)
+@@ -59,6 +61,33 @@ class WebSocketServer:
+             print(f"⚠️ Connection closed with error: {e}")
+         except Exception as e:
+             print(f"❌ Unexpected error in handler: {e}")
++        finally:
++            self._clients.discard(websocket)
++
++    async def _broadcast_transform_status(self, status: str):
++        """Send recalibration progress to every connected headset."""
++        if not self._clients:
++            return
++
++        message = json.dumps({"type": "transform_status", "status": status})
++        clients = tuple(self._clients)
++        results = await asyncio.gather(
++            *(client.send(message) for client in clients),
++            return_exceptions=True,
++        )
++
++        for client, result in zip(clients, results):
++            if isinstance(result, Exception):
++                self._clients.discard(client)
++
++    def send_transform_status(self, status: str):
++        """Thread-safe bridge from the robot loop to the WebSocket loop."""
++        if not self._loop or not self._loop.is_running():
++            return
++        asyncio.run_coroutine_threadsafe(
++            self._broadcast_transform_status(status),
++            self._loop,
++        )
+ 
+     async def start_websocket_server(self):
+         protocol = "wss" if self.ssl_context else "ws"
+diff --git a/src/telerobot/web_ui/index.html b/src/telerobot/web_ui/index.html
+index 58c9687..e68cd7c 100644
+--- a/src/telerobot/web_ui/index.html
++++ b/src/telerobot/web_ui/index.html
+@@ -19,6 +19,7 @@
+     <script src="js/components/look-at-headset.js"></script>
+     <script src="js/components/video-panel.js?v=brightness-v2"></script>
+     <script src="js/components/controller-axes.js"></script>
++    <script src="js/components/transform-status.js"></script>
+     <script src="js/components/vr-button.js"></script>
+     <script src="js/components/websocket-panel.js"></script>
+     <script src="js/components/dataset-panel.js"></script>
+@@ -59,6 +60,9 @@
+       <!-- Dataset recording panel -->
+       <a-entity id="dataset-panel" dataset-panel></a-entity>
+ 
++      <!-- Minimal A-button transform reset status -->
++      <a-entity id="transform-status" transform-status></a-entity>
++
+       <!-- Left hand controller with laser ray -->
+       <a-entity 
+         id="left-hand"
+@@ -84,4 +88,4 @@
+       </a-entity>
+     </a-scene>
+   </body>
+-</html>
+\ No newline at end of file
++</html>
+diff --git a/src/telerobot/web_ui/js/components/controller-axes.js b/src/telerobot/web_ui/js/components/controller-axes.js
+index 0ec3c2f..670e244 100644
+--- a/src/telerobot/web_ui/js/components/controller-axes.js
++++ b/src/telerobot/web_ui/js/components/controller-axes.js
+@@ -69,6 +69,10 @@ AFRAME.registerComponent('controller-axes', {
+   onAButton: function() {
+     console.log("A pressed -> recalibrate");
+ 
++    window.dispatchEvent(new CustomEvent('transform-status-local', {
++      detail: { status: 'requesting' }
++    }));
++
+     // Re-zero the controller-side reference immediately.
+     // This prevents the next Grip frame from containing a large old delta.
+     if (this.el.object3D) {
+@@ -87,13 +91,21 @@ AFRAME.registerComponent('controller-axes', {
+ 
+     if (!window.webSocketManager || !window.webSocketManager.isConnected) {
+       console.log("WebSocket not connected");
++      window.dispatchEvent(new CustomEvent('transform-status-local', {
++        detail: { status: 'error' }
++      }));
+       return;
+     }
+ 
+     window.webSocketManager
+       .triggerAction("recalibrate", 100)
+       .then(() => console.log("Recalibrate action sent"))
+-      .catch(console.error);
++      .catch((error) => {
++        console.error(error);
++        window.dispatchEvent(new CustomEvent('transform-status-local', {
++          detail: { status: 'error' }
++        }));
++      });
+   },
+ 
+   onGripDown: function() {
+diff --git a/src/telerobot/web_ui/js/components/transform-status.js b/src/telerobot/web_ui/js/components/transform-status.js
+new file mode 100644
+index 0000000..39136d8
+--- /dev/null
++++ b/src/telerobot/web_ui/js/components/transform-status.js
+@@ -0,0 +1,151 @@
++/**
++ * Minimal headset status for A-button controller-to-end-effector recalibration.
++ */
++AFRAME.registerComponent('transform-status', {
++  schema: {
++    position: { type: 'vec3', default: { x: 0, y: 0.43, z: -1.5 } }
++  },
++
++  init: function() {
++    this.state = 'offline';
++    this.resetTimer = null;
++
++    this.onLocalStatus = this.onLocalStatus.bind(this);
++    this.onServerMessage = this.onServerMessage.bind(this);
++    this.onConnectionChange = this.onConnectionChange.bind(this);
++
++    this.createPanel();
++    window.addEventListener('transform-status-local', this.onLocalStatus);
++
++    if (window.webSocketManager) {
++      window.webSocketManager.addMessageListener(this.onServerMessage);
++      window.webSocketManager.addConnectionChangeListener(this.onConnectionChange);
++      this.setState(window.webSocketManager.isConnected ? 'idle' : 'offline');
++    }
++  },
++
++  createPanel: function() {
++    const position = this.data.position;
++
++    this.panel = document.createElement('a-box');
++    this.panel.setAttribute('class', 'draggable');
++    this.panel.setAttribute('position', `${position.x} ${position.y} ${position.z}`);
++    this.panel.setAttribute('width', '0.72');
++    this.panel.setAttribute('height', '0.16');
++    this.panel.setAttribute('depth', '0.012');
++    this.panel.setAttribute('color', '#10141C');
++    this.panel.setAttribute('opacity', '0.92');
++    this.panel.setAttribute('grabbable', 'startButtons: triggerdown; endButtons: triggerup');
++    this.panel.setAttribute('draggable', '');
++    this.panel.setAttribute('look-at-headset', 'smoothing: 0.05');
++
++    const badge = document.createElement('a-circle');
++    badge.setAttribute('radius', '0.045');
++    badge.setAttribute('position', '-0.29 0 0.013');
++    badge.setAttribute('color', '#E8EDF5');
++    this.panel.appendChild(badge);
++
++    const badgeText = document.createElement('a-text');
++    badgeText.setAttribute('value', 'A');
++    badgeText.setAttribute('align', 'center');
++    badgeText.setAttribute('anchor', 'center');
++    badgeText.setAttribute('position', '-0.29 -0.014 0.014');
++    badgeText.setAttribute('width', '0.26');
++    badgeText.setAttribute('color', '#10141C');
++    this.panel.appendChild(badgeText);
++
++    const title = document.createElement('a-text');
++    title.setAttribute('value', 'Reset transform');
++    title.setAttribute('align', 'left');
++    title.setAttribute('anchor', 'left');
++    title.setAttribute('position', '-0.215 0.025 0.014');
++    title.setAttribute('width', '0.78');
++    title.setAttribute('color', '#FFFFFF');
++    this.panel.appendChild(title);
++
++    this.statusText = document.createElement('a-text');
++    this.statusText.setAttribute('align', 'left');
++    this.statusText.setAttribute('anchor', 'left');
++    this.statusText.setAttribute('position', '-0.215 -0.035 0.014');
++    this.statusText.setAttribute('width', '0.66');
++    this.statusText.setAttribute('color', '#9AA6B2');
++    this.panel.appendChild(this.statusText);
++
++    this.statusDot = document.createElement('a-circle');
++    this.statusDot.setAttribute('radius', '0.012');
++    this.statusDot.setAttribute('position', '0.31 0 0.014');
++    this.panel.appendChild(this.statusDot);
++
++    this.el.appendChild(this.panel);
++  },
++
++  onLocalStatus: function(event) {
++    if (event.detail && event.detail.status) {
++      this.setState(event.detail.status);
++    }
++  },
++
++  onServerMessage: function(message) {
++    if (message.type === 'transform_status') {
++      this.setState(message.status);
++    }
++  },
++
++  onConnectionChange: function(status) {
++    if (status === 'connected') {
++      if (this.state === 'offline' || this.state === 'error') this.setState('idle');
++    } else if (status === 'disconnected') {
++      this.setState('offline');
++    }
++  },
++
++  setState: function(state) {
++    const styles = {
++      offline: { label: 'Connect first', color: '#EF6C73' },
++      idle: { label: 'Press A', color: '#7E8A98' },
++      requesting: { label: 'Starting...', color: '#F4B860' },
++      collecting: { label: 'Hold Grip to capture', color: '#F4B860' },
++      finished: { label: 'Pose captured', color: '#62D49A' },
++      error: { label: 'Try again', color: '#EF6C73' }
++    };
++    const style = styles[state] || styles.idle;
++
++    this.state = state;
++    this.statusText.setAttribute('value', style.label);
++    this.statusText.setAttribute('color', style.color);
++    this.statusDot.setAttribute('color', style.color);
++    this.statusDot.removeAttribute('animation__pulse');
++    this.statusDot.setAttribute('scale', '1 1 1');
++
++    if (state === 'requesting' || state === 'collecting') {
++      this.statusDot.setAttribute(
++        'animation__pulse',
++        'property: scale; from: 1 1 1; to: 1.45 1.45 1.45; dir: alternate; loop: true; dur: 450; easing: easeInOutSine'
++      );
++    }
++
++    if (this.resetTimer) {
++      clearTimeout(this.resetTimer);
++      this.resetTimer = null;
++    }
++
++    if (state === 'finished') {
++      this.resetTimer = setTimeout(() => this.setState('idle'), 1800);
++    } else if (state === 'error') {
++      this.resetTimer = setTimeout(() => {
++        const connected = window.webSocketManager && window.webSocketManager.isConnected;
++        this.setState(connected ? 'idle' : 'offline');
++      }, 1800);
++    }
++  },
++
++  remove: function() {
++    window.removeEventListener('transform-status-local', this.onLocalStatus);
++    if (window.webSocketManager) {
++      window.webSocketManager.removeMessageListener(this.onServerMessage);
++      window.webSocketManager.removeConnectionChangeListener(this.onConnectionChange);
++    }
++    if (this.resetTimer) clearTimeout(this.resetTimer);
++    if (this.panel && this.panel.parentNode) this.panel.parentNode.removeChild(this.panel);
++  }
++});
+diff --git a/src/telerobot/web_ui/js/websocket-manager.js b/src/telerobot/web_ui/js/websocket-manager.js
+index 8737faa..bb96aa8 100644
+--- a/src/telerobot/web_ui/js/websocket-manager.js
++++ b/src/telerobot/web_ui/js/websocket-manager.js
+@@ -21,6 +21,7 @@ class WebSocketManager {
+     this.currentAction = 'none'; // Current action: none, reset, start_episode, stop_episode, save_dataset
+     this.actionLocked = false; // Prevents multiple actions within 500ms
+     this._connectionObservers = []; // Observers for connection state changes
++    this._messageObservers = []; // Observers for messages from the robot server
+     
+     // Store controller data
+     this.controllerData = {
+@@ -50,6 +51,16 @@ class WebSocketManager {
+     this._connectionObservers = this._connectionObservers.filter(cb => cb !== callback);
+   }
+ 
++  /** Subscribe to parsed messages received from the robot server. */
++  addMessageListener(callback) {
++    this._messageObservers.push(callback);
++  }
++
++  /** Unsubscribe from robot server messages. */
++  removeMessageListener(callback) {
++    this._messageObservers = this._messageObservers.filter(cb => cb !== callback);
++  }
++
+   /**
+    * Update connection status and notify all observers.
+    * @param {string} status - One of: 'disconnected', 'connecting', 'connected'
+@@ -99,8 +110,15 @@ class WebSocketManager {
+         };
+ 
+         this.socket.onmessage = (event) => {
+-          // Handle incoming messages if needed
+           console.log('📥 Received message:', event.data);
++          try {
++            const message = JSON.parse(event.data);
++            for (const cb of this._messageObservers) {
++              try { cb(message); } catch (e) { console.error('Message observer error:', e); }
++            }
++          } catch (error) {
++            console.warn('⚠️ Ignoring non-JSON WebSocket message:', error);
++          }
+         };
+ 
+       } catch (error) {

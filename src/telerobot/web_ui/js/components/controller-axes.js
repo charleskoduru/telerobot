@@ -69,6 +69,10 @@ AFRAME.registerComponent('controller-axes', {
   onAButton: function() {
     console.log("A pressed -> recalibrate");
 
+    window.dispatchEvent(new CustomEvent('transform-status-local', {
+      detail: { status: 'requesting' }
+    }));
+
     // Re-zero the controller-side reference immediately.
     // This prevents the next Grip frame from containing a large old delta.
     if (this.el.object3D) {
@@ -87,13 +91,21 @@ AFRAME.registerComponent('controller-axes', {
 
     if (!window.webSocketManager || !window.webSocketManager.isConnected) {
       console.log("WebSocket not connected");
+      window.dispatchEvent(new CustomEvent('transform-status-local', {
+        detail: { status: 'error' }
+      }));
       return;
     }
 
     window.webSocketManager
       .triggerAction("recalibrate", 100)
       .then(() => console.log("Recalibrate action sent"))
-      .catch(console.error);
+      .catch((error) => {
+        console.error(error);
+        window.dispatchEvent(new CustomEvent('transform-status-local', {
+          detail: { status: 'error' }
+        }));
+      });
   },
 
   onGripDown: function() {
