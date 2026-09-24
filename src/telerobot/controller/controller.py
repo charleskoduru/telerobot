@@ -2,7 +2,7 @@
 
 import copy
 from abc import ABC, abstractmethod
-
+import time
 from lerobot.processor import RobotAction, RobotObservation
 from lerobot.robots.robot import Robot
 from lerobot.robots.so_follower.so_follower import SOFollower
@@ -101,8 +101,36 @@ class SingleController(Controller):
         self.initial_obs = self.robot.get_observation()
 
     def reset(self) -> None:
-        print("Resetting robot to initial position...")
-        self.robot.send_action(self.initial_obs)
+        print("Slowly resetting robot to initial position...")
+
+        duration_s = 4.0  # Increase this for a slower reset
+        fps = 30
+        steps = int(duration_s * fps)
+
+        current_obs = self.robot.get_observation()
+
+        joint_keys = [
+            key for key in self.initial_obs
+            if key.endswith(".pos") and key in current_obs
+        ]
+
+        for step in range(1, steps + 1):
+            t = step / steps
+
+            # Smooth acceleration and deceleration
+            smooth_t = t * t * (3.0 - 2.0 * t)
+
+            action = {
+                key: float(current_obs[key])
+                + smooth_t * (
+                    float(self.initial_obs[key]) - float(current_obs[key])
+                )
+                for key in joint_keys
+            }
+
+            self.robot.send_action(action)
+            time.sleep(1.0 / fps)
+
         _reset_processor_state(self.processor)
         self.has_initial_position = True
         self.awaiting_recalibration = False
