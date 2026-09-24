@@ -352,7 +352,7 @@ AFRAME.registerComponent('video-panel', {
     // The texture is attached only after loadeddata; until then the tile
     // visibly reports which camera is still connecting.
     const planeEl = document.createElement('a-plane');
-    planeEl.setAttribute('position', `${x} ${y} 0.026`);
+    planeEl.setAttribute('position', `${x} ${y} 0.040`);
     planeEl.setAttribute('width', width);
     planeEl.setAttribute('height', height);
     planeEl.setAttribute('material', 'shader: flat; color: #222222; side: front');
@@ -362,7 +362,7 @@ AFRAME.registerComponent('video-panel', {
     const textEl = document.createElement('a-text');
     textEl.setAttribute('value', `${stream.cameraName}\nConnecting...`);
     textEl.setAttribute('align', 'center');
-    textEl.setAttribute('position', `${x} ${y} 0.029`);
+    textEl.setAttribute('position', `${x} ${y} 0.046`);
     textEl.setAttribute('width', Math.min(width, 1.5));
     textEl.setAttribute('color', '#ffffff');
     this.panel.appendChild(textEl);
@@ -379,7 +379,7 @@ AFRAME.registerComponent('video-panel', {
     
     // Semi-transparent background for label (sized to text)
     const labelBgEl = document.createElement('a-plane');
-    labelBgEl.setAttribute('position', `${x} ${labelY} 0.027`);
+    labelBgEl.setAttribute('position', `${x} ${labelY} 0.043`);
     labelBgEl.setAttribute('width', labelTextWidth);
     labelBgEl.setAttribute('height', labelHeight);
     labelBgEl.setAttribute('material', 'shader: flat; color: #000000; opacity: 0.5; transparent: true');
@@ -389,7 +389,7 @@ AFRAME.registerComponent('video-panel', {
     const labelEl = document.createElement('a-text');
     labelEl.setAttribute('value', stream.cameraName);
     labelEl.setAttribute('align', 'center');
-    labelEl.setAttribute('position', `${x} ${labelY} 0.028`);
+    labelEl.setAttribute('position', `${x} ${labelY} 0.046`);
     labelEl.setAttribute('width', '1.2');
     labelEl.setAttribute('color', '#ffffff');
     this.panel.appendChild(labelEl);
