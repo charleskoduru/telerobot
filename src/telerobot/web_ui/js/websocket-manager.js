@@ -227,9 +227,11 @@ class WebSocketManager {
       this.actionLocked = true;
       this.currentAction = action;
       console.log(`🎬 Action triggered: ${action}`);
+      this.sendControllerData();
       
       setTimeout(() => {
         this.currentAction = 'none';
+        this.sendControllerData();
         this.actionLocked = false;
         console.log(`🎬 Action complete: ${action}`);
         resolve();

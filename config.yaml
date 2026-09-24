@@ -28,6 +28,14 @@ cameras:
     vr_gain: 1.1
     vr_brightness: 15
 
+teleoperation:
+  mode: leader # vr |leader 
+  leader:
+    type: so101_leader
+    port: /dev/ttyACM1
+    id: so101_leader
+    use_degrees: true
+
 
 arms:
   right:  # change to "left" if using your left VR controller

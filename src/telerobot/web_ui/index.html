@@ -3,7 +3,13 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WebXR Camera Viewer</title>
+    <title>TeleRobot Control</title>
+    <script>
+      window.telerobotClientMode = /OculusBrowser|Quest/i.test(navigator.userAgent)
+        ? 'headset'
+        : 'desktop';
+    </script>
+    <link rel="stylesheet" href="css/desktop-dashboard.css">
     
     <!-- A-Frame and dependencies -->
     <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
@@ -15,6 +21,7 @@
     <!-- Application modules -->
     <script src="js/websocket-manager.js"></script>
     <script src="js/webrtc-manager.js"></script>
+    <script src="js/desktop-dashboard.js" defer></script>
     <script src="js/components/laser-visibility.js"></script>
     <script src="js/components/look-at-headset.js"></script>
     <script src="js/components/video-panel.js?v=flicker-fix-v1"></script>
@@ -26,6 +33,66 @@
     <script src="js/components/passthrough-manager.js"></script>
   </head>
   <body>
+    <main id="desktop-dashboard" hidden>
+      <header class="dashboard-header">
+        <div>
+          <p class="eyebrow">RIF ROBOTICS</p>
+          <h1>TeleRobot Control</h1>
+        </div>
+        <div class="header-badges">
+          <span id="desktop-mode-badge" class="badge">MODE</span>
+          <span id="desktop-connection-badge" class="badge badge-offline">Offline</span>
+        </div>
+      </header>
+
+      <section class="dashboard-layout">
+        <section class="camera-section" aria-labelledby="camera-heading">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">LIVE VIEW</p>
+              <h2 id="camera-heading">Cameras</h2>
+            </div>
+            <button id="desktop-refresh-cameras" class="button button-secondary" type="button">Refresh</button>
+          </div>
+          <div id="desktop-camera-grid" class="camera-grid">
+            <p class="empty-message">Loading cameras…</p>
+          </div>
+        </section>
+
+        <aside class="control-panel" aria-labelledby="recording-heading">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">DATASET</p>
+              <h2 id="recording-heading">Recording</h2>
+            </div>
+            <span id="desktop-recording-dot" class="recording-dot"></span>
+          </div>
+
+          <div class="status-card">
+            <span>Status</span>
+            <strong id="desktop-recording-status">Not recording</strong>
+          </div>
+          <div class="status-card">
+            <span>Saved episodes</span>
+            <strong id="desktop-episode-count">0</strong>
+          </div>
+
+          <button id="desktop-record-button" class="button button-primary button-wide" type="button" disabled>
+            Start episode
+          </button>
+          <button id="desktop-reset-button" class="button button-secondary button-wide" type="button" disabled>
+            Reset robot pose
+          </button>
+          <button id="desktop-finalize-button" class="button button-secondary button-wide" type="button" disabled>
+            Finalize dataset
+          </button>
+
+          <p id="desktop-help" class="help-text">Connecting to the robot control server…</p>
+          <button id="desktop-connect-button" class="text-button" type="button">Reconnect</button>
+        </aside>
+      </section>
+    </main>
+
     <a-scene 
       passthrough-manager
       xr-mode-ui="XRMode: ar"

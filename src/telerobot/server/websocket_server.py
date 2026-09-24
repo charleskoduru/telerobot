@@ -26,6 +26,7 @@ class WebSocketServer:
         self._thread = None
         self._ready_event = threading.Event()  # to signal readiness
         self._clients = set()
+        self._runtime_status = {}
         
         # SSL configuration
         self.use_ssl = use_ssl
@@ -52,6 +53,11 @@ class WebSocketServer:
     async def on_observation_received(self, websocket):
         self._clients.add(websocket)
         try:
+            if self._runtime_status:
+                await websocket.send(json.dumps({
+                    "type": "runtime_status",
+                    **self._runtime_status,
+                }))
             async for message in websocket:
                 self.last_observation = json.loads(message)
                 # print("📥 Observation received:", self.last_observation)
@@ -64,12 +70,12 @@ class WebSocketServer:
         finally:
             self._clients.discard(websocket)
 
-    async def _broadcast_transform_status(self, status: str):
-        """Send recalibration progress to every connected headset."""
+    async def _broadcast_json(self, payload: dict):
+        """Send one JSON event to every connected UI client."""
         if not self._clients:
             return
 
-        message = json.dumps({"type": "transform_status", "status": status})
+        message = json.dumps(payload)
         clients = tuple(self._clients)
         results = await asyncio.gather(
             *(client.send(message) for client in clients),
@@ -80,14 +86,25 @@ class WebSocketServer:
             if isinstance(result, Exception):
                 self._clients.discard(client)
 
-    def send_transform_status(self, status: str):
-        """Thread-safe bridge from the robot loop to the WebSocket loop."""
+    def _schedule_broadcast(self, payload: dict):
         if not self._loop or not self._loop.is_running():
             return
         asyncio.run_coroutine_threadsafe(
-            self._broadcast_transform_status(status),
+            self._broadcast_json(payload),
             self._loop,
         )
+
+    def send_transform_status(self, status: str):
+        """Thread-safe bridge from the robot loop to the WebSocket loop."""
+        self._schedule_broadcast({"type": "transform_status", "status": status})
+
+    def send_runtime_status(self, **status):
+        """Store and broadcast recording/control state for desktop and XR UIs."""
+        self._runtime_status = {**self._runtime_status, **status}
+        self._schedule_broadcast({
+            "type": "runtime_status",
+            **self._runtime_status,
+        })
 
     async def start_websocket_server(self):
         protocol = "wss" if self.ssl_context else "ws"

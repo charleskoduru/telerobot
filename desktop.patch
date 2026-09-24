@@ -1,0 +1,849 @@
+diff --git a/src/telerobot/cli.py b/src/telerobot/cli.py
+index 7e35124..9d0fefd 100644
+--- a/src/telerobot/cli.py
++++ b/src/telerobot/cli.py
+@@ -125,6 +125,7 @@ def main():
+         DATASET_AVAILABLE
+         and cfg.dataset is not None
+     ),
++    teleoperation_mode=cfg.teleoperation.mode,
+     )
+     teleop_device = setup_websocket_server()
+ 
+@@ -159,6 +160,17 @@ def main():
+     finalized_dataset = False
+     push_to_hub = cfg.dataset.push_to_hub if cfg.dataset else False
+ 
++    def publish_runtime_status():
++        teleop_device.send_runtime_status(
++            control_mode=cfg.teleoperation.mode,
++            dataset_configured=dataset is not None,
++            recording=recording,
++            finalized=finalized_dataset,
++            episode_count=(dataset.num_episodes if dataset is not None else 0),
++        )
++
++    publish_runtime_status()
++
+     log_message(logger, f"🎮 Teleoperation mode: {cfg.teleoperation.mode}")
+     if cfg.teleoperation.mode == "vr":
+         log_message(logger, "Starting teleop loop. Connect your VR headset to teleoperate the robot...")
+@@ -204,16 +216,19 @@ def main():
+                 log_message(logger, f"🔴 Recording episode {dataset.num_episodes if dataset is not None else '?'}...")
+                 recording = True
+                 finalized_dataset = False
++                publish_runtime_status()
+             elif action_str == 'stop_episode' and recording:
+                 controller.reset()
+                 # End the current recording episode
+                 end_active_episode(dataset, logger)
+                 recording = False
++                publish_runtime_status()
+             elif action_str == 'save_dataset' and not finalized_dataset:
+                 # Finalize and save the entire dataset
+                 finalize_dataset(dataset, push_to_hub, logger)
+                 recording = False
+                 finalized_dataset = True
++                publish_runtime_status()
+             else:
+                 result = None
+                 if cfg.teleoperation.mode == "leader":
+@@ -297,7 +312,7 @@ def main():
+         if leader_device is not None and leader_device.is_connected:
+             leader_device.disconnect()
+ 
+-        if DATASET_AVAILABLE:
++        if DATASET_AVAILABLE and not finalized_dataset:
+ 
+             finalize_dataset(
+                 dataset,
+diff --git a/src/telerobot/server/websocket_server.py b/src/telerobot/server/websocket_server.py
+index f340ec1..c787aca 100644
+--- a/src/telerobot/server/websocket_server.py
++++ b/src/telerobot/server/websocket_server.py
+@@ -26,6 +26,7 @@ class WebSocketServer:
+         self._thread = None
+         self._ready_event = threading.Event()  # to signal readiness
+         self._clients = set()
++        self._runtime_status = {}
+         
+         # SSL configuration
+         self.use_ssl = use_ssl
+@@ -52,6 +53,11 @@ class WebSocketServer:
+     async def on_observation_received(self, websocket):
+         self._clients.add(websocket)
+         try:
++            if self._runtime_status:
++                await websocket.send(json.dumps({
++                    "type": "runtime_status",
++                    **self._runtime_status,
++                }))
+             async for message in websocket:
+                 self.last_observation = json.loads(message)
+                 # print("📥 Observation received:", self.last_observation)
+@@ -64,12 +70,12 @@ class WebSocketServer:
+         finally:
+             self._clients.discard(websocket)
+ 
+-    async def _broadcast_transform_status(self, status: str):
+-        """Send recalibration progress to every connected headset."""
++    async def _broadcast_json(self, payload: dict):
++        """Send one JSON event to every connected UI client."""
+         if not self._clients:
+             return
+ 
+-        message = json.dumps({"type": "transform_status", "status": status})
++        message = json.dumps(payload)
+         clients = tuple(self._clients)
+         results = await asyncio.gather(
+             *(client.send(message) for client in clients),
+@@ -80,15 +86,26 @@ class WebSocketServer:
+             if isinstance(result, Exception):
+                 self._clients.discard(client)
+ 
+-    def send_transform_status(self, status: str):
+-        """Thread-safe bridge from the robot loop to the WebSocket loop."""
++    def _schedule_broadcast(self, payload: dict):
+         if not self._loop or not self._loop.is_running():
+             return
+         asyncio.run_coroutine_threadsafe(
+-            self._broadcast_transform_status(status),
++            self._broadcast_json(payload),
+             self._loop,
+         )
+ 
++    def send_transform_status(self, status: str):
++        """Thread-safe bridge from the robot loop to the WebSocket loop."""
++        self._schedule_broadcast({"type": "transform_status", "status": status})
++
++    def send_runtime_status(self, **status):
++        """Store and broadcast recording/control state for desktop and XR UIs."""
++        self._runtime_status = {**self._runtime_status, **status}
++        self._schedule_broadcast({
++            "type": "runtime_status",
++            **self._runtime_status,
++        })
++
+     async def start_websocket_server(self):
+         protocol = "wss" if self.ssl_context else "ws"
+         print(f"🌐 WebSocket server listening on {protocol}://0.0.0.0:8080")
+diff --git a/src/telerobot/server/webxr_server.py b/src/telerobot/server/webxr_server.py
+index 8dfc147..24e8d16 100644
+--- a/src/telerobot/server/webxr_server.py
++++ b/src/telerobot/server/webxr_server.py
+@@ -70,12 +70,14 @@ class WebXRServer:
+         port: int = 8765,
+         ssl_context=None,
+         dataset_configured: bool = False,
++        teleoperation_mode: str = "vr",
+         camera_image_settings: Optional[Dict[str, Dict[str, float]]] = None,
+     ):
+         self.host = host
+         self.port = port
+         self.ssl_context = ssl_context
+         self.dataset_configured = dataset_configured
++        self.teleoperation_mode = teleoperation_mode
+         self.app = web.Application()
+         self.pcs: set = set()
+         self.camera_tracks: Dict[str, CameraStreamTrack] = {}
+@@ -121,6 +123,7 @@ class WebXRServer:
+         web_ui_path = PACKAGE_DIR / "web_ui"
+         if web_ui_path.exists():
+             self.app.router.add_static("/js/", web_ui_path / "js", name="js")
++            self.app.router.add_static("/css/", web_ui_path / "css", name="css")
+         
+         # Add CORS to all routes
+         for route in list(self.app.router.routes()):
+@@ -159,10 +162,10 @@ class WebXRServer:
+             with open(html_path, 'r', encoding='utf-8') as f:
+                 html_content = f.read()
+             # Inject server-side config before any app scripts load
+-            config_script = (
+-                f'<script>window.telerobotConfig = '
+-                f'{{ "datasetConfigured": {str(self.dataset_configured).lower()} }};</script>\n'
+-            )
++            config_script = '<script>window.telerobotConfig = ' + json.dumps({
++                "datasetConfigured": self.dataset_configured,
++                "teleoperationMode": self.teleoperation_mode,
++            }) + ';</script>\n'
+             html_content = html_content.replace('<script src="js/websocket-manager.js"></script>',
+                 config_script + '    <script src="js/websocket-manager.js"></script>')
+             return web.Response(
+@@ -287,6 +290,7 @@ def create_webxr_server(
+     cert_file=None,
+     key_file=None,
+     dataset_configured: bool = False,
++    teleoperation_mode: str = "vr",
+     camera_image_settings: Optional[Dict[str, Dict[str, float]]] = None,
+ ) -> WebXRServer:
+     """Create and configure the WebXR server."""
+@@ -307,6 +311,7 @@ def create_webxr_server(
+     server = WebXRServer(
+         ssl_context=ssl_context,
+         dataset_configured=dataset_configured,
++        teleoperation_mode=teleoperation_mode,
+         camera_image_settings=camera_image_settings,
+     )
+     
+@@ -321,6 +326,7 @@ def setup_webxr_server(
+     robot,
+     logger,
+     dataset_configured: bool = False,
++    teleoperation_mode: str = "vr",
+     camera_image_settings: Optional[Dict[str, Dict[str, float]]] = None,
+ ):
+     """Initialize and start the WebXR server in a background thread."""
+@@ -334,6 +340,7 @@ def setup_webxr_server(
+         cert_file=cert_file,
+         key_file=key_file,
+         dataset_configured=dataset_configured,
++        teleoperation_mode=teleoperation_mode,
+         camera_image_settings=camera_image_settings,
+     )
+ 
+@@ -375,4 +382,4 @@ if __name__ == "__main__":
+     try:
+         asyncio.run(asyncio.Future())  # Run forever
+     except KeyboardInterrupt:
+-        print("Server stopped.")
+\ No newline at end of file
++        print("Server stopped.")
+diff --git a/src/telerobot/web_ui/css/desktop-dashboard.css b/src/telerobot/web_ui/css/desktop-dashboard.css
+new file mode 100644
+index 0000000..f9d66c9
+--- /dev/null
++++ b/src/telerobot/web_ui/css/desktop-dashboard.css
+@@ -0,0 +1,287 @@
++:root {
++  color-scheme: dark;
++  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
++  background: #090c11;
++  color: #f4f7fb;
++}
++
++[hidden] {
++  display: none !important;
++}
++
++body.desktop-client {
++  min-height: 100vh;
++  margin: 0;
++  overflow: auto;
++  background:
++    radial-gradient(circle at 20% -10%, rgba(54, 101, 255, 0.18), transparent 35rem),
++    #090c11;
++}
++
++body.desktop-client a-scene {
++  display: none;
++}
++
++#desktop-dashboard {
++  box-sizing: border-box;
++  width: min(1500px, 100%);
++  min-height: 100vh;
++  margin: 0 auto;
++  padding: 32px clamp(20px, 4vw, 64px) 48px;
++}
++
++.dashboard-header,
++.section-heading {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 20px;
++}
++
++.dashboard-header {
++  margin-bottom: 28px;
++}
++
++h1,
++h2,
++p {
++  margin: 0;
++}
++
++h1 {
++  margin-top: 4px;
++  font-size: clamp(28px, 4vw, 44px);
++  letter-spacing: -0.04em;
++}
++
++h2 {
++  margin-top: 3px;
++  font-size: 22px;
++  letter-spacing: -0.02em;
++}
++
++.eyebrow {
++  color: #8090a3;
++  font-size: 11px;
++  font-weight: 750;
++  letter-spacing: 0.18em;
++}
++
++.header-badges {
++  display: flex;
++  gap: 10px;
++}
++
++.badge {
++  border: 1px solid #28303b;
++  border-radius: 999px;
++  padding: 8px 12px;
++  background: #141922;
++  color: #b9c2ce;
++  font-size: 12px;
++  font-weight: 700;
++  letter-spacing: 0.06em;
++  text-transform: uppercase;
++}
++
++.badge-online {
++  border-color: rgba(72, 205, 143, 0.35);
++  color: #74dfa9;
++}
++
++.badge-offline {
++  border-color: rgba(232, 105, 112, 0.3);
++  color: #ec8a90;
++}
++
++.dashboard-layout {
++  display: grid;
++  grid-template-columns: minmax(0, 1fr) 310px;
++  gap: 22px;
++}
++
++.camera-section,
++.control-panel {
++  border: 1px solid #202630;
++  border-radius: 20px;
++  background: rgba(17, 21, 28, 0.92);
++  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.25);
++}
++
++.camera-section {
++  padding: 20px;
++}
++
++.control-panel {
++  align-self: start;
++  padding: 22px;
++}
++
++.camera-grid {
++  display: grid;
++  grid-template-columns: repeat(2, minmax(0, 1fr));
++  gap: 14px;
++  margin-top: 18px;
++}
++
++.camera-card {
++  position: relative;
++  min-width: 0;
++  margin: 0;
++  overflow: hidden;
++  border: 1px solid #29313c;
++  border-radius: 14px;
++  background: #05070a;
++}
++
++.camera-card video {
++  display: block;
++  width: 100%;
++  aspect-ratio: 4 / 3;
++  object-fit: contain;
++  background: #05070a;
++}
++
++.camera-card figcaption {
++  position: absolute;
++  bottom: 10px;
++  left: 10px;
++  border: 1px solid rgba(255, 255, 255, 0.12);
++  border-radius: 999px;
++  padding: 5px 9px;
++  background: rgba(7, 9, 13, 0.78);
++  color: #dce3ec;
++  font-size: 12px;
++  backdrop-filter: blur(8px);
++}
++
++.camera-card-error {
++  border-color: #9f4349;
++}
++
++.empty-message {
++  grid-column: 1 / -1;
++  padding: 80px 20px;
++  color: #8290a0;
++  text-align: center;
++}
++
++.status-card {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  margin-top: 14px;
++  border: 1px solid #252d38;
++  border-radius: 12px;
++  padding: 14px;
++  background: #0d1117;
++  color: #8491a0;
++  font-size: 13px;
++}
++
++.status-card strong {
++  color: #eef2f7;
++  font-size: 14px;
++}
++
++.recording-dot {
++  width: 11px;
++  height: 11px;
++  border-radius: 50%;
++  background: #4d5663;
++}
++
++.recording-dot-active {
++  background: #ef5e67;
++  box-shadow: 0 0 0 6px rgba(239, 94, 103, 0.13);
++  animation: recording-pulse 1.2s ease-in-out infinite alternate;
++}
++
++@keyframes recording-pulse {
++  to { opacity: 0.55; }
++}
++
++.button {
++  border: 0;
++  border-radius: 11px;
++  padding: 10px 14px;
++  font: inherit;
++  font-size: 13px;
++  font-weight: 700;
++  cursor: pointer;
++  transition: transform 120ms ease, opacity 120ms ease, background 120ms ease;
++}
++
++.button:hover:not(:disabled) {
++  transform: translateY(-1px);
++}
++
++.button:disabled {
++  cursor: not-allowed;
++  opacity: 0.38;
++}
++
++.button-primary {
++  background: #e8edf5;
++  color: #10141c;
++}
++
++.button-danger {
++  background: #e65b64;
++  color: #ffffff;
++}
++
++.button-secondary {
++  border: 1px solid #303946;
++  background: #171d26;
++  color: #d5dce5;
++}
++
++.button-wide {
++  width: 100%;
++  margin-top: 12px;
++  padding: 13px 16px;
++}
++
++.help-text {
++  min-height: 36px;
++  margin-top: 16px;
++  color: #7e8b9b;
++  font-size: 12px;
++  line-height: 1.5;
++}
++
++.text-button {
++  border: 0;
++  padding: 0;
++  background: transparent;
++  color: #8baeff;
++  font: inherit;
++  font-size: 12px;
++  cursor: pointer;
++}
++
++@media (max-width: 900px) {
++  .dashboard-layout {
++    grid-template-columns: 1fr;
++  }
++
++  .control-panel {
++    order: -1;
++  }
++}
++
++@media (max-width: 620px) {
++  #desktop-dashboard {
++    padding: 22px 14px 32px;
++  }
++
++  .dashboard-header {
++    align-items: flex-start;
++    flex-direction: column;
++  }
++
++  .camera-grid {
++    grid-template-columns: 1fr;
++  }
++}
+diff --git a/src/telerobot/web_ui/index.html b/src/telerobot/web_ui/index.html
+index ba4f4c5..085c60c 100644
+--- a/src/telerobot/web_ui/index.html
++++ b/src/telerobot/web_ui/index.html
+@@ -3,7 +3,13 @@
+   <head>
+     <meta charset="UTF-8">
+     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+-    <title>WebXR Camera Viewer</title>
++    <title>TeleRobot Control</title>
++    <script>
++      window.telerobotClientMode = /OculusBrowser|Quest/i.test(navigator.userAgent)
++        ? 'headset'
++        : 'desktop';
++    </script>
++    <link rel="stylesheet" href="css/desktop-dashboard.css">
+     
+     <!-- A-Frame and dependencies -->
+     <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+@@ -15,6 +21,7 @@
+     <!-- Application modules -->
+     <script src="js/websocket-manager.js"></script>
+     <script src="js/webrtc-manager.js"></script>
++    <script src="js/desktop-dashboard.js" defer></script>
+     <script src="js/components/laser-visibility.js"></script>
+     <script src="js/components/look-at-headset.js"></script>
+     <script src="js/components/video-panel.js?v=flicker-fix-v1"></script>
+@@ -26,6 +33,66 @@
+     <script src="js/components/passthrough-manager.js"></script>
+   </head>
+   <body>
++    <main id="desktop-dashboard" hidden>
++      <header class="dashboard-header">
++        <div>
++          <p class="eyebrow">RIF ROBOTICS</p>
++          <h1>TeleRobot Control</h1>
++        </div>
++        <div class="header-badges">
++          <span id="desktop-mode-badge" class="badge">MODE</span>
++          <span id="desktop-connection-badge" class="badge badge-offline">Offline</span>
++        </div>
++      </header>
++
++      <section class="dashboard-layout">
++        <section class="camera-section" aria-labelledby="camera-heading">
++          <div class="section-heading">
++            <div>
++              <p class="eyebrow">LIVE VIEW</p>
++              <h2 id="camera-heading">Cameras</h2>
++            </div>
++            <button id="desktop-refresh-cameras" class="button button-secondary" type="button">Refresh</button>
++          </div>
++          <div id="desktop-camera-grid" class="camera-grid">
++            <p class="empty-message">Loading cameras…</p>
++          </div>
++        </section>
++
++        <aside class="control-panel" aria-labelledby="recording-heading">
++          <div class="section-heading">
++            <div>
++              <p class="eyebrow">DATASET</p>
++              <h2 id="recording-heading">Recording</h2>
++            </div>
++            <span id="desktop-recording-dot" class="recording-dot"></span>
++          </div>
++
++          <div class="status-card">
++            <span>Status</span>
++            <strong id="desktop-recording-status">Not recording</strong>
++          </div>
++          <div class="status-card">
++            <span>Saved episodes</span>
++            <strong id="desktop-episode-count">0</strong>
++          </div>
++
++          <button id="desktop-record-button" class="button button-primary button-wide" type="button" disabled>
++            Start episode
++          </button>
++          <button id="desktop-reset-button" class="button button-secondary button-wide" type="button" disabled>
++            Reset robot pose
++          </button>
++          <button id="desktop-finalize-button" class="button button-secondary button-wide" type="button" disabled>
++            Finalize dataset
++          </button>
++
++          <p id="desktop-help" class="help-text">Connecting to the robot control server…</p>
++          <button id="desktop-connect-button" class="text-button" type="button">Reconnect</button>
++        </aside>
++      </section>
++    </main>
++
+     <a-scene 
+       passthrough-manager
+       xr-mode-ui="XRMode: ar"
+diff --git a/src/telerobot/web_ui/js/components/video-panel.js b/src/telerobot/web_ui/js/components/video-panel.js
+index a62d55e..f052d2f 100644
+--- a/src/telerobot/web_ui/js/components/video-panel.js
++++ b/src/telerobot/web_ui/js/components/video-panel.js
+@@ -21,6 +21,9 @@ AFRAME.registerComponent('video-panel', {
+     this.panel = null;
+     this.videoStreams = [];
+     this.removed = false;
++
++    // The desktop dashboard owns its own HTML video elements and WebRTC peers.
++    if (window.telerobotClientMode === 'desktop') return;
+     
+     // Wait for scene to be fully loaded
+     if (this.el.sceneEl.hasLoaded) {
+@@ -434,4 +437,4 @@ AFRAME.registerComponent('video-panel', {
+     this.removed = true;
+     this.clearPanels();
+   }
+-});
+\ No newline at end of file
++});
+diff --git a/src/telerobot/web_ui/js/desktop-dashboard.js b/src/telerobot/web_ui/js/desktop-dashboard.js
+new file mode 100644
+index 0000000..3f5feec
+--- /dev/null
++++ b/src/telerobot/web_ui/js/desktop-dashboard.js
+@@ -0,0 +1,209 @@
++/** Desktop camera and dataset controls. The Quest keeps the existing A-Frame UI. */
++class DesktopDashboard {
++  constructor() {
++    this.config = window.telerobotConfig || {};
++    this.connected = false;
++    this.countingDown = false;
++    this.runtime = {
++      control_mode: this.config.teleoperationMode || 'vr',
++      dataset_configured: !!this.config.datasetConfigured,
++      recording: false,
++      finalized: false,
++      episode_count: 0
++    };
++
++    this.root = document.getElementById('desktop-dashboard');
++    this.modeBadge = document.getElementById('desktop-mode-badge');
++    this.connectionBadge = document.getElementById('desktop-connection-badge');
++    this.recordingStatus = document.getElementById('desktop-recording-status');
++    this.recordingDot = document.getElementById('desktop-recording-dot');
++    this.episodeCount = document.getElementById('desktop-episode-count');
++    this.recordButton = document.getElementById('desktop-record-button');
++    this.resetButton = document.getElementById('desktop-reset-button');
++    this.finalizeButton = document.getElementById('desktop-finalize-button');
++    this.connectButton = document.getElementById('desktop-connect-button');
++    this.refreshButton = document.getElementById('desktop-refresh-cameras');
++    this.cameraGrid = document.getElementById('desktop-camera-grid');
++    this.helpText = document.getElementById('desktop-help');
++
++    this.onConnectionChange = this.onConnectionChange.bind(this);
++    this.onServerMessage = this.onServerMessage.bind(this);
++  }
++
++  async init() {
++    document.body.classList.add('desktop-client');
++    this.root.hidden = false;
++
++    this.recordButton.addEventListener('click', () => this.toggleRecording());
++    this.resetButton.addEventListener('click', () => this.resetRobot());
++    this.finalizeButton.addEventListener('click', () => this.finalizeDataset());
++    this.connectButton.addEventListener('click', () => this.connect());
++    this.refreshButton.addEventListener('click', () => this.loadCameras());
++
++    window.webSocketManager.addConnectionChangeListener(this.onConnectionChange);
++    window.webSocketManager.addMessageListener(this.onServerMessage);
++
++    this.render();
++    await Promise.allSettled([this.connect(), this.loadCameras()]);
++  }
++
++  async connect() {
++    this.helpText.textContent = 'Connecting to the robot control server…';
++    try {
++      await window.webSocketManager.connect();
++    } catch (error) {
++      console.error('Desktop WebSocket connection failed:', error);
++      this.helpText.textContent = 'Connection failed. Check the certificate, then reconnect.';
++    }
++  }
++
++  onConnectionChange(status) {
++    this.connected = status === WebSocketManager.STATUS_CONNECTED;
++    this.helpText.textContent = this.connected
++      ? 'Controls are ready.'
++      : (status === WebSocketManager.STATUS_CONNECTING ? 'Connecting…' : 'Control server disconnected.');
++    this.render();
++  }
++
++  onServerMessage(message) {
++    if (message.type !== 'runtime_status') return;
++    this.runtime = { ...this.runtime, ...message };
++    this.render();
++  }
++
++  render() {
++    const modeLabel = this.runtime.control_mode === 'leader' ? 'LEADER ARM' : 'VR';
++    this.modeBadge.textContent = modeLabel;
++
++    this.connectionBadge.textContent = this.connected ? 'Connected' : 'Offline';
++    this.connectionBadge.classList.toggle('badge-online', this.connected);
++    this.connectionBadge.classList.toggle('badge-offline', !this.connected);
++
++    this.episodeCount.textContent = String(this.runtime.episode_count || 0);
++    this.recordingDot.classList.toggle('recording-dot-active', !!this.runtime.recording);
++
++    if (this.countingDown) {
++      // Countdown text is managed by startCountdown().
++    } else if (this.runtime.finalized) {
++      this.recordingStatus.textContent = 'Dataset finalized';
++    } else {
++      this.recordingStatus.textContent = this.runtime.recording ? 'Recording' : 'Not recording';
++    }
++
++    const datasetReady = this.connected
++      && this.runtime.dataset_configured
++      && !this.runtime.finalized;
++    this.recordButton.disabled = !datasetReady || this.countingDown;
++    this.recordButton.textContent = this.runtime.recording ? 'Stop & save episode' : 'Start episode';
++    this.recordButton.classList.toggle('button-danger', !!this.runtime.recording);
++    this.resetButton.disabled = !this.connected;
++    this.finalizeButton.disabled = !datasetReady || !!this.runtime.recording || this.countingDown;
++
++    if (!this.runtime.dataset_configured) {
++      this.helpText.textContent = 'No dataset is configured in config.yaml.';
++    } else if (this.runtime.finalized) {
++      this.helpText.textContent = 'Dataset finalized. Restart Telerobot to record more episodes.';
++    }
++  }
++
++  async loadCameras() {
++    this.refreshButton.disabled = true;
++    this.cameraGrid.replaceChildren();
++    const loading = document.createElement('p');
++    loading.className = 'empty-message';
++    loading.textContent = 'Loading cameras…';
++    this.cameraGrid.appendChild(loading);
++
++    window.WebRTCManager.disconnectAll();
++    const cameras = await window.WebRTCManager.getCameras();
++    this.cameraGrid.replaceChildren();
++
++    if (!cameras.length) {
++      const empty = document.createElement('p');
++      empty.className = 'empty-message';
++      empty.textContent = 'No cameras available.';
++      this.cameraGrid.appendChild(empty);
++      this.refreshButton.disabled = false;
++      return;
++    }
++
++    for (const cameraName of cameras) {
++      const figure = document.createElement('figure');
++      figure.className = 'camera-card';
++
++      const video = document.createElement('video');
++      video.autoplay = true;
++      video.muted = true;
++      video.playsInline = true;
++      video.setAttribute('aria-label', `${cameraName} live camera`);
++
++      const caption = document.createElement('figcaption');
++      caption.textContent = cameraName;
++
++      figure.append(video, caption);
++      this.cameraGrid.appendChild(figure);
++
++      const connected = await window.WebRTCManager.connectToCamera(cameraName, video);
++      if (!connected) figure.classList.add('camera-card-error');
++    }
++
++    this.refreshButton.disabled = false;
++  }
++
++  async toggleRecording() {
++    if (this.runtime.recording) {
++      await this.sendAction('stop_episode');
++      return;
++    }
++    await this.startCountdown();
++  }
++
++  async startCountdown() {
++    if (this.countingDown || !this.connected) return;
++    this.countingDown = true;
++    this.render();
++
++    for (let count = 3; count > 0; count -= 1) {
++      this.recordingStatus.textContent = `Recording in ${count}`;
++      await new Promise(resolve => setTimeout(resolve, 1000));
++      if (!this.connected) {
++        this.countingDown = false;
++        this.render();
++        return;
++      }
++    }
++
++    await this.sendAction('start_episode');
++    this.countingDown = false;
++    this.render();
++  }
++
++  async resetRobot() {
++    const leaderWarning = this.runtime.control_mode === 'leader'
++      ? ' Move the leader arm near the follower reset pose before continuing.'
++      : '';
++    if (!window.confirm(`Return the robot to its captured initial pose?${leaderWarning}`)) return;
++    await this.sendAction('reset', 800);
++  }
++
++  async finalizeDataset() {
++    if (!window.confirm('Finalize the dataset and upload it if push_to_hub is enabled?')) return;
++    await this.sendAction('save_dataset', 800);
++  }
++
++  async sendAction(action, durationMs = 250) {
++    try {
++      await window.webSocketManager.triggerAction(action, durationMs);
++    } catch (error) {
++      console.error(`Desktop action failed: ${action}`, error);
++      this.helpText.textContent = 'Action was not sent. Wait a moment and try again.';
++    }
++  }
++}
++
++window.addEventListener('DOMContentLoaded', () => {
++  if (window.telerobotClientMode !== 'desktop') return;
++  const dashboard = new DesktopDashboard();
++  window.desktopDashboard = dashboard;
++  dashboard.init();
++});
+diff --git a/src/telerobot/web_ui/js/websocket-manager.js b/src/telerobot/web_ui/js/websocket-manager.js
+index bb96aa8..042f13f 100644
+--- a/src/telerobot/web_ui/js/websocket-manager.js
++++ b/src/telerobot/web_ui/js/websocket-manager.js
+@@ -227,9 +227,11 @@ class WebSocketManager {
+       this.actionLocked = true;
+       this.currentAction = action;
+       console.log(`🎬 Action triggered: ${action}`);
++      this.sendControllerData();
+       
+       setTimeout(() => {
+         this.currentAction = 'none';
++        this.sendControllerData();
+         this.actionLocked = false;
+         console.log(`🎬 Action complete: ${action}`);
+         resolve();

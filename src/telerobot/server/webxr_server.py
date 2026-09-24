@@ -70,12 +70,14 @@ class WebXRServer:
         port: int = 8765,
         ssl_context=None,
         dataset_configured: bool = False,
+        teleoperation_mode: str = "vr",
         camera_image_settings: Optional[Dict[str, Dict[str, float]]] = None,
     ):
         self.host = host
         self.port = port
         self.ssl_context = ssl_context
         self.dataset_configured = dataset_configured
+        self.teleoperation_mode = teleoperation_mode
         self.app = web.Application()
         self.pcs: set = set()
         self.camera_tracks: Dict[str, CameraStreamTrack] = {}
@@ -121,6 +123,7 @@ class WebXRServer:
         web_ui_path = PACKAGE_DIR / "web_ui"
         if web_ui_path.exists():
             self.app.router.add_static("/js/", web_ui_path / "js", name="js")
+            self.app.router.add_static("/css/", web_ui_path / "css", name="css")
         
         # Add CORS to all routes
         for route in list(self.app.router.routes()):
@@ -159,10 +162,10 @@ class WebXRServer:
             with open(html_path, 'r', encoding='utf-8') as f:
                 html_content = f.read()
             # Inject server-side config before any app scripts load
-            config_script = (
-                f'<script>window.telerobotConfig = '
-                f'{{ "datasetConfigured": {str(self.dataset_configured).lower()} }};</script>\n'
-            )
+            config_script = '<script>window.telerobotConfig = ' + json.dumps({
+                "datasetConfigured": self.dataset_configured,
+                "teleoperationMode": self.teleoperation_mode,
+            }) + ';</script>\n'
             html_content = html_content.replace('<script src="js/websocket-manager.js"></script>',
                 config_script + '    <script src="js/websocket-manager.js"></script>')
             return web.Response(
@@ -287,6 +290,7 @@ def create_webxr_server(
     cert_file=None,
     key_file=None,
     dataset_configured: bool = False,
+    teleoperation_mode: str = "vr",
     camera_image_settings: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> WebXRServer:
     """Create and configure the WebXR server."""
@@ -307,6 +311,7 @@ def create_webxr_server(
     server = WebXRServer(
         ssl_context=ssl_context,
         dataset_configured=dataset_configured,
+        teleoperation_mode=teleoperation_mode,
         camera_image_settings=camera_image_settings,
     )
     
@@ -321,6 +326,7 @@ def setup_webxr_server(
     robot,
     logger,
     dataset_configured: bool = False,
+    teleoperation_mode: str = "vr",
     camera_image_settings: Optional[Dict[str, Dict[str, float]]] = None,
 ):
     """Initialize and start the WebXR server in a background thread."""
@@ -334,6 +340,7 @@ def setup_webxr_server(
         cert_file=cert_file,
         key_file=key_file,
         dataset_configured=dataset_configured,
+        teleoperation_mode=teleoperation_mode,
         camera_image_settings=camera_image_settings,
     )
 

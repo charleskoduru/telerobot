@@ -6,7 +6,7 @@ from pathlib import Path
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data  # noqa: F401 (imported conditionally)
 
-from telerobot.config import load_robot
+from telerobot.config import build_leader_teleoperator, load_robot
 from telerobot.controller import build_controller
 try:
     from telerobot.dataset import (
@@ -51,11 +51,11 @@ def main():
     logger = get_logger()
 
     #This section enable version of telerobot to be operated: telerobot or telerobot run start the program. Use telerobot --help to see the available commands and options.
-    parser = argparse.ArgumentParser(description="Telerobot — VR teleoperation for SO-ARM101")
+    parser = argparse.ArgumentParser(description="Telerobot — VR or leader-arm teleoperation for SO-ARM101")
     subparsers = parser.add_subparsers(dest="command")
 
     # --- run (default) ---
-    run_parser = subparsers.add_parser("run", help="Start the VR teleoperation loop")
+    run_parser = subparsers.add_parser("run", help="Start the configured teleoperation loop")
     run_parser.add_argument(
         "-c", "--config",
         default=DEFAULT_CONFIG_PATH,
@@ -107,6 +107,7 @@ def main():
 
     #This line add the config.yaml from config.pu using the load_robot funcation. 
     duo_robot, cfg = load_robot(config_path)
+    leader_device = build_leader_teleoperator(cfg)
 
 
     camera_server = setup_webxr_server(
@@ -124,6 +125,7 @@ def main():
         DATASET_AVAILABLE
         and cfg.dataset is not None
     ),
+    teleoperation_mode=cfg.teleoperation.mode,
     )
     teleop_device = setup_websocket_server()
 
@@ -140,13 +142,17 @@ def main():
 
     # Connect to the robot
     duo_robot.connect()
+    if leader_device is not None:
+        leader_device.connect()
 
     # Init rerun viewer (optional)
     if cfg.use_rerun:
         init_rerun(session_name="vr_lerobot_teleop")
 
     if not duo_robot.is_connected or not teleop_device.is_connected:
-        raise ValueError("Robot or teleop is not connected!")
+        raise ValueError("Robot or web control server is not connected!")
+    if leader_device is not None and not leader_device.is_connected:
+        raise ValueError("Leader arm is not connected!")
 
     controller.capture_initial_observations()
 
@@ -154,10 +160,26 @@ def main():
     finalized_dataset = False
     push_to_hub = cfg.dataset.push_to_hub if cfg.dataset else False
 
-    log_message(logger, "Starting teleop loop. Connect your VR headset to teleoperate the robot...")
+    def publish_runtime_status():
+        teleop_device.send_runtime_status(
+            control_mode=cfg.teleoperation.mode,
+            dataset_configured=dataset is not None,
+            recording=recording,
+            finalized=finalized_dataset,
+            episode_count=(dataset.num_episodes if dataset is not None else 0),
+        )
+
+    publish_runtime_status()
+
+    log_message(logger, f"🎮 Teleoperation mode: {cfg.teleoperation.mode}")
+    if cfg.teleoperation.mode == "vr":
+        log_message(logger, "Starting teleop loop. Connect your VR headset to teleoperate the robot...")
+    else:
+        log_message(logger, "Starting teleop loop. Move the leader arm to command the follower...")
     loop_count = 0
     last_action_str = "none"
     camera_read_warned = set()
+    leader_action_validated = cfg.teleoperation.mode != "leader"
 
     # Here the code then enters a loop to handle VR observations, control the robot, stream camera frames, and manage dataset recording based on user actions.
     
@@ -166,14 +188,15 @@ def main():
             t0 = time.perf_counter()
             t_control = t_rerun = t_dataset = None  # TODO: Remove timing debug
 
-            # Get teleop action
-            vr_obs = teleop_device.last_observation
+            # WebSocket messages always carry recording/reset actions. In VR mode
+            # they also carry controller poses; leader mode ignores those poses.
+            web_obs = teleop_device.last_observation
             camera_frames = {}  # Populated by process_vr_observation if available
 
-            if vr_obs is None:
-                pass  # No observation received yet; cameras still streamed below
+            if web_obs is None:
+                action_str = "none"
             else:
-                raw_action_str = vr_obs.get("action", "none")
+                raw_action_str = web_obs.get("action", "none")
 
                 if raw_action_str == last_action_str and raw_action_str != "none":
                     action_str = "none"
@@ -182,54 +205,77 @@ def main():
 
                 last_action_str = raw_action_str
 
-                if action_str == "recalibrate":
-                    controller.recalibrate()
-                    teleop_device.send_transform_status("collecting")
-                    
+            if action_str == "recalibrate" and cfg.teleoperation.mode == "vr":
+                controller.recalibrate()
+                teleop_device.send_transform_status("collecting")
 
-                if action_str == 'reset' and not controller.has_initial_position:
+            if action_str == 'reset' and not controller.has_initial_position:
+                controller.reset()
+            elif action_str == 'start_episode' and not recording:
+                # Begin a new recording episode (no-op if already recording)
+                log_message(logger, f"🔴 Recording episode {dataset.num_episodes if dataset is not None else '?'}...")
+                recording = True
+                finalized_dataset = False
+                publish_runtime_status()
+            elif action_str == 'stop_episode' and recording:
+                if cfg.teleoperation.mode == "vr":
                     controller.reset()
-                elif action_str == 'start_episode' and not recording:
-                    # Begin a new recording episode (no-op if already recording)
-                    log_message(logger, f"🔴 Recording episode {dataset.num_episodes if dataset is not None else '?'}...")
-                    recording = True
-                    finalized_dataset = False
-                elif action_str == 'stop_episode' and recording:
-                    controller.reset()
-                    # End the current recording episode
-                    end_active_episode(dataset, logger)
-                    recording = False
-                elif action_str == 'save_dataset' and not finalized_dataset:
-                    # Finalize and save the entire dataset
-                    finalize_dataset(dataset, push_to_hub, logger)
-                    recording = False
-                    finalized_dataset = True
-                else:
+                # End the current recording episode
+                end_active_episode(dataset, logger)
+                recording = False
+                publish_runtime_status()
+            elif action_str == 'save_dataset' and not finalized_dataset:
+                # Finalize and save the entire dataset
+                finalize_dataset(dataset, push_to_hub, logger)
+                recording = False
+                finalized_dataset = True
+                publish_runtime_status()
+            else:
+                result = None
+                if cfg.teleoperation.mode == "leader":
+                    # The leader produces the same named follower-joint action
+                    # dictionary that the VR IK path produces downstream.
+                    action = leader_device.get_action()
+                    if not leader_action_validated:
+                        expected_keys = set(duo_robot.action_features)
+                        actual_keys = set(action)
+                        if actual_keys != expected_keys:
+                            raise RuntimeError(
+                                "Leader/follower action features do not match. "
+                                f"Expected {sorted(expected_keys)}, got {sorted(actual_keys)}."
+                            )
+                        leader_action_validated = True
+                    obs = duo_robot.get_observation()
+                    duo_robot.send_action(action)
+                    controller.has_initial_position = False
+                    result = (obs, action)
+                elif web_obs is not None:
                     was_collecting_pose = getattr(
                         controller, "awaiting_recalibration", False
                     )
-                    result = controller.process_vr_observation(vr_obs)
+                    result = controller.process_vr_observation(web_obs)
                     if was_collecting_pose and not getattr(
                         controller, "awaiting_recalibration", False
                     ):
                         teleop_device.send_transform_status("finished")
-                    t_control = time.perf_counter()  # TODO: Remove timing debug
 
-                    if result is not None:
-                        obs, action = result
+                t_control = time.perf_counter()  # TODO: Remove timing debug
 
-                        # Collect camera frames from observation (avoids double camera read)
-                        for cam_name in duo_robot.cameras:
-                            if cam_name in obs:
-                                camera_frames[cam_name] = obs[cam_name]
+                if result is not None:
+                    obs, action = result
 
-                        if cfg.use_rerun:
-                            log_rerun_data(observation=obs, action=action)
+                    # Collect camera frames from observation (avoids double camera read)
+                    for cam_name in duo_robot.cameras:
+                        if cam_name in obs:
+                            camera_frames[cam_name] = obs[cam_name]
 
-                        t_rerun = time.perf_counter()  # TODO: Remove timing debug
+                    if cfg.use_rerun:
+                        log_rerun_data(observation=obs, action=action)
 
-                        if recording:
-                            record_step(dataset, cfg, obs, action)
+                    t_rerun = time.perf_counter()  # TODO: Remove timing debug
+
+                    if recording:
+                        record_step(dataset, cfg, obs, action)
 
             # Always stream cameras — reuse obs frames when available, otherwise read directly
             for cam_name, cam in duo_robot.cameras.items():
@@ -264,7 +310,10 @@ def main():
 
     finally:
 
-        if DATASET_AVAILABLE:
+        if leader_device is not None and leader_device.is_connected:
+            leader_device.disconnect()
+
+        if DATASET_AVAILABLE and not finalized_dataset:
 
             finalize_dataset(
                 dataset,

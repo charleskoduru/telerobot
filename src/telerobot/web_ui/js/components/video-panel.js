@@ -21,6 +21,9 @@ AFRAME.registerComponent('video-panel', {
     this.panel = null;
     this.videoStreams = [];
     this.removed = false;
+
+    // The desktop dashboard owns its own HTML video elements and WebRTC peers.
+    if (window.telerobotClientMode === 'desktop') return;
     
     // Wait for scene to be fully loaded
     if (this.el.sceneEl.hasLoaded) {

@@ -59,12 +59,29 @@ class DatasetConfig:
 
 
 @dataclass
+class LeaderConfig:
+    """Configuration for an SO-100/SO-101 leader teleoperator."""
+    type: str
+    port: str
+    id: str
+    use_degrees: bool = True
+
+
+@dataclass
+class TeleoperationConfig:
+    """Select the active motion-command source."""
+    mode: str = "vr"
+    leader: LeaderConfig | None = None
+
+
+@dataclass
 class RobotConfig:
     """Top-level robot configuration."""
     id: str
     fps: int
     cameras: dict[str, CameraConfig]
     arms: dict[str, ArmConfig]
+    teleoperation: TeleoperationConfig = field(default_factory=TeleoperationConfig)
     dataset: DatasetConfig | None = None
     use_rerun: bool = True
 
@@ -173,17 +190,89 @@ def load_config(path: str | Path) -> RobotConfig:
             push_to_hub=dataset_section.get("push_to_hub", False),
         )
 
+    # Parse teleoperation mode. Missing section preserves the original VR behavior.
+    teleoperation_section = raw.get("teleoperation", {}) or {}
+    teleoperation_mode = str(teleoperation_section.get("mode", "vr")).lower()
+    if teleoperation_mode not in {"vr", "leader"}:
+        raise ValueError("teleoperation.mode must be either 'vr' or 'leader'.")
+
+    leader_cfg: LeaderConfig | None = None
+    leader_section = teleoperation_section.get("leader")
+    if leader_section is not None:
+        leader_type = str(leader_section.get("type", "so101_leader")).lower()
+        if leader_type not in {"so100_leader", "so101_leader"}:
+            raise ValueError(
+                "teleoperation.leader.type must be 'so100_leader' or 'so101_leader'."
+            )
+        leader_port = leader_section.get("port")
+        if not leader_port:
+            raise ValueError("teleoperation.leader.port is required.")
+        leader_cfg = LeaderConfig(
+            type=leader_type,
+            port=str(leader_port),
+            id=str(leader_section.get("id", leader_type)),
+            use_degrees=bool(leader_section.get("use_degrees", True)),
+        )
+
+    if teleoperation_mode == "leader":
+        if leader_cfg is None:
+            raise ValueError(
+                "teleoperation.mode is 'leader', but teleoperation.leader is missing."
+            )
+        if len(arms) != 1:
+            raise ValueError(
+                "Leader mode currently supports one follower arm and one leader arm."
+            )
+        follower_cfg = next(iter(arms.values()))
+        if follower_cfg.use_degrees != leader_cfg.use_degrees:
+            raise ValueError(
+                "Leader and follower use_degrees values must match to prevent unsafe commands."
+            )
+
     robot_section = raw.get("robot", {})
     return RobotConfig(
         id=robot_section.get("id", "duo_robot"),
         fps=robot_section.get("fps", 30),
         cameras=cameras,
         arms=arms,
+        teleoperation=TeleoperationConfig(
+            mode=teleoperation_mode,
+            leader=leader_cfg,
+        ),
         dataset=dataset_cfg,
         use_rerun=robot_section.get("use_rerun", True),
     )
 
 
+
+
+def build_leader_teleoperator(cfg: RobotConfig):
+    """Build the configured leader arm, or return None in VR mode."""
+    if cfg.teleoperation.mode != "leader":
+        return None
+
+    leader_cfg = cfg.teleoperation.leader
+    if leader_cfg is None:
+        raise ValueError("Leader configuration is required in leader mode.")
+
+    from lerobot.teleoperators.so_leader import (
+        SO100Leader,
+        SO100LeaderConfig,
+        SO101Leader,
+        SO101LeaderConfig,
+    )
+
+    config_class, teleoperator_class = {
+        "so100_leader": (SO100LeaderConfig, SO100Leader),
+        "so101_leader": (SO101LeaderConfig, SO101Leader),
+    }[leader_cfg.type]
+
+    leader_device_config = config_class(
+        port=leader_cfg.port,
+        id=leader_cfg.id,
+        use_degrees=leader_cfg.use_degrees,
+    )
+    return teleoperator_class(leader_device_config)
 
 
 def load_robot(path: str | Path) -> tuple[Robot, RobotConfig]:
