@@ -13,10 +13,9 @@ cameras:
     height: 480
     fourcc: "MJPG"
     fps: 30
-    # These three values affect only the video sent to the VR headset.
-    vr_gamma: 0.70       # Lower values brighten shadows.
-    vr_gain: 1.1        # Multiplies the full image brightness.
-    vr_brightness: 15    # Adds brightness after gain (0-100).
+    vr_gamma: 1.0      # Lower values brighten shadows.
+    vr_gain: 1.0     # Multiplies the full image brightness.
+    vr_brightness: 20    # Adds brightness after gain (0-100).
 
 
   bevCam:
@@ -24,8 +23,8 @@ cameras:
     width: 640
     height: 480
     fps: 30
-    vr_gamma: 0.70
-    vr_gain: 1.1
+    vr_gamma: 1.0
+    vr_gain: 1.0
     vr_brightness: 15
 
 teleoperation:
@@ -46,8 +45,9 @@ arms:
     regularization: 1.0e-3 #adjust IK smoothing/stability (lower = more aggressive, higher = more stable), .5e-3, 1.0e-3, 3.0e-3 MAX: 
     end_effector_step_sizes: {  x: 0.45, y: 0.45, z: 0.45 } #scale between xr controller pose vs. robot end effector pose (lower = less sensitive, higher = more sensitive) 
     end_effector_bounds: #allowable workspace for the robot end effector (in meters), measure from the robot base j1. 
-      min: [0.034, -0.17, -0.0378]
-      max: [0.391, 0.2828, 0.2943]
+      min: [0.0417, -0.2545, -0.0585]
+      max: [0.413, 0.2829, 0.3498]
+
       # min: [0.05, -0.20, -0.025]
       # max: [0.40,  0.20, 0.30]
 
@@ -59,7 +59,7 @@ arms:
 
 #Uncomment to enable episode recording to a LeRobot dataset
 dataset:
-    repo_id: "charlieK123/pickingUpForceps"
-    single_task: "forcep pick and place"
+    repo_id: "charlieK123/iso_gripper_leaderArm"
+    single_task: "picking up forceps and placing them into a container"
     push_to_hub: true  # set to true to push the dataset to Hugging Face Hub on save
     #root: "./datasets"  # optional: override dataset storage path
