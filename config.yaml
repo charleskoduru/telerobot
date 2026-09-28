@@ -27,6 +27,15 @@ cameras:
     vr_gain: 1.0
     vr_brightness: 15
 
+  baseCam:
+    index: "/dev/video10"  # Change to the third camera's actual /dev/video path.
+    width: 640
+    height: 480
+    fps: 30
+    vr_gamma: 1.0
+    vr_gain: 1.0
+    vr_brightness: 0
+
 teleoperation:
   mode: leader # vr |leader 
   leader:
@@ -41,7 +50,7 @@ arms:
     type: so100
     port: /dev/ttyACM0
     use_degrees: true
-    cameras: [gripperCam, bevCam]
+    cameras: [gripperCam, bevCam, baseCam]
     regularization: 1.0e-3 #adjust IK smoothing/stability (lower = more aggressive, higher = more stable), .5e-3, 1.0e-3, 3.0e-3 MAX: 
     end_effector_step_sizes: {  x: 0.45, y: 0.45, z: 0.45 } #scale between xr controller pose vs. robot end effector pose (lower = less sensitive, higher = more sensitive) 
     end_effector_bounds: #allowable workspace for the robot end effector (in meters), measure from the robot base j1. 
@@ -59,7 +68,7 @@ arms:
 
 #Uncomment to enable episode recording to a LeRobot dataset
 dataset:
-    repo_id: "charlieK123/iso_gripper_leaderArm"
-    single_task: "picking up forceps and placing them into a container"
+    repo_id: "charlieK123/gripper_Top_Base_Camera_Views"
+    single_task: "picking up forceps and sorting the forceps"
     push_to_hub: true  # set to true to push the dataset to Hugging Face Hub on save
     #root: "./datasets"  # optional: override dataset storage path
