@@ -28,7 +28,7 @@ cameras:
     vr_brightness: 15
 
   baseCam:
-    index: "/dev/video10"  # Change to the third camera's actual /dev/video path.
+    index: "/dev/video14"  # Change to the third camera's actual /dev/video path.
     width: 640
     height: 480
     fps: 30
@@ -68,7 +68,7 @@ arms:
 
 #Uncomment to enable episode recording to a LeRobot dataset
 dataset:
-    repo_id: "charlieK123/gripper_Top_Base_Camera_Views"
+    repo_id: "charlieK123/gripper_Top_Base_Camera_Views_Continued"
     single_task: "picking up forceps and sorting the forceps"
     push_to_hub: true  # set to true to push the dataset to Hugging Face Hub on save
     #root: "./datasets"  # optional: override dataset storage path
