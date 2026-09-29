@@ -11,6 +11,8 @@ class DesktopDashboard {
       finalized: false,
       checkpointing: false,
       checkpoint_error: null,
+      deleting_episode: false,
+      delete_episode_error: null,
       episode_count: 0
     };
 
@@ -22,6 +24,7 @@ class DesktopDashboard {
     this.episodeCount = document.getElementById('desktop-episode-count');
     this.recordButton = document.getElementById('desktop-record-button');
     this.resetButton = document.getElementById('desktop-reset-button');
+    this.deletePreviousButton = document.getElementById('desktop-delete-previous-button');
     this.finalizeButton = document.getElementById('desktop-finalize-button');
     this.connectButton = document.getElementById('desktop-connect-button');
     this.refreshButton = document.getElementById('desktop-refresh-cameras');
@@ -38,6 +41,7 @@ class DesktopDashboard {
 
     this.recordButton.addEventListener('click', () => this.toggleRecording());
     this.resetButton.addEventListener('click', () => this.resetRobot());
+    this.deletePreviousButton.addEventListener('click', () => this.deletePreviousEpisode());
     this.finalizeButton.addEventListener('click', () => this.finalizeDataset());
     this.connectButton.addEventListener('click', () => this.connect());
     this.refreshButton.addEventListener('click', () => this.loadCameras());
@@ -88,23 +92,37 @@ class DesktopDashboard {
       // Countdown text is managed by startCountdown().
     } else if (this.runtime.checkpointing) {
       this.recordingStatus.textContent = 'Saving/uploading checkpoint…';
+    } else if (this.runtime.deleting_episode) {
+      this.recordingStatus.textContent = 'Deleting previous episode…';
     } else {
       this.recordingStatus.textContent = this.runtime.recording ? 'Recording' : 'Not recording';
     }
 
     const datasetReady = this.connected
       && this.runtime.dataset_configured
-      && !this.runtime.checkpointing;
+      && !this.runtime.checkpointing
+      && !this.runtime.deleting_episode;
     this.recordButton.disabled = !datasetReady || this.countingDown;
     this.recordButton.textContent = this.runtime.recording ? 'Stop & save episode' : 'Start episode';
     this.recordButton.classList.toggle('button-danger', !!this.runtime.recording);
     this.resetButton.disabled = !this.connected;
+    this.deletePreviousButton.disabled = !datasetReady
+      || !!this.runtime.recording
+      || this.countingDown
+      || Number(this.runtime.episode_count || 0) <= 0;
+    this.deletePreviousButton.textContent = this.runtime.deleting_episode
+      ? 'Deleting…'
+      : 'Delete previous episode';
     this.finalizeButton.disabled = !datasetReady || !!this.runtime.recording || this.countingDown;
 
     if (!this.runtime.dataset_configured) {
       this.helpText.textContent = 'No dataset is configured in config.yaml.';
     } else if (this.runtime.checkpointing) {
       this.helpText.textContent = 'Checkpoint is saving/uploading in the background. Camera streams stay live; recording re-enables when it finishes.';
+    } else if (this.runtime.deleting_episode) {
+      this.helpText.textContent = 'Deleting the most recently saved episode in the background. Robot control and camera streams stay live.';
+    } else if (this.runtime.delete_episode_error) {
+      this.helpText.textContent = `Delete previous episode: ${this.runtime.delete_episode_error}`;
     } else if (this.runtime.checkpoint_error) {
       this.helpText.textContent = `Checkpoint failed: ${this.runtime.checkpoint_error}`;
     } else if (this.connected) {
@@ -190,6 +208,15 @@ class DesktopDashboard {
       : '';
     if (!window.confirm(`Return the robot to its captured initial pose?${leaderWarning}`)) return;
     await this.sendAction('reset', 800);
+  }
+
+  async deletePreviousEpisode() {
+    const count = Number(this.runtime.episode_count || 0);
+    if (count <= 0 || this.runtime.recording || this.runtime.checkpointing || this.runtime.deleting_episode) return;
+
+    const previousIndex = count - 1;
+    if (!window.confirm(`Delete the most recently saved episode (${previousIndex})? This cannot be undone locally.`)) return;
+    await this.sendAction('delete_previous_episode', 800);
   }
 
   async finalizeDataset() {

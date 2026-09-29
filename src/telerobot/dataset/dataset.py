@@ -240,7 +240,7 @@ def delete_episodes_from_dataset(
     root: str | None = None,
     push_to_hub: bool = False,
     logger=None,
-) -> None:
+) -> bool:
     """Delete specific episodes from a LeRobot dataset.
 
     The original dataset is replaced in-place: episodes are deleted into a
@@ -281,12 +281,76 @@ def delete_episodes_from_dataset(
         log_message(logger, f"✅ Dataset at {dataset_root} updated in-place.")
 
         if push_to_hub:
-            updated_dataset = LeRobotDataset(repo_id=repo_id, root=root)
-            log_message(logger, f"🚀 Pushing updated dataset '{repo_id}' to Hugging Face Hub...")
-            updated_dataset.push_to_hub(tags=["TeLeRobot"])
-            log_message(logger, f"✅ Dataset '{repo_id}' pushed successfully.")
+            try:
+                updated_dataset = LeRobotDataset(repo_id=repo_id, root=root)
+                log_message(logger, f"🚀 Pushing updated dataset '{repo_id}' to Hugging Face Hub...")
+                updated_dataset.push_to_hub(tags=["TeLeRobot"])
+                log_message(logger, f"✅ Dataset '{repo_id}' pushed successfully.")
+            except Exception as exc:
+                # The local deletion is already complete and should not be rolled back
+                # just because the network/Hub update failed.
+                log_message(logger, f"❌ Failed to push updated dataset to Hub: {exc}")
+                log_message(
+                    logger,
+                    "   Previous episode was deleted locally. Recording can continue; retry a checkpoint later.",
+                )
+                return False
+        return True
     except Exception:
         # Clean up temp dir on failure
         if tmp_root.exists():
             shutil.rmtree(tmp_root)
         raise
+
+
+def delete_previous_episode_checkpoint(
+    dataset: LeRobotDataset | None,
+    cfg,
+    push_to_hub: bool,
+    logger,
+) -> tuple[LeRobotDataset | None, int | None, bool]:
+    """Delete the most recently saved episode, then reopen for recording.
+
+    This mirrors :func:`checkpoint_dataset`: the writer is finalized first so
+    parquet/video files are valid, the last saved episode is removed, the
+    optional Hub copy is updated, and finally the same dataset is reopened in
+    write mode. It is intended to run in a background thread so camera/robot
+    control stays responsive.
+
+    Returns ``(resumed_dataset, deleted_episode_index, upload_ok)``.
+    """
+    if dataset is None:
+        return None, None, True
+
+    if dataset.has_pending_frames():
+        raise RuntimeError(
+            "Cannot delete the previous episode while an episode is recording. "
+            "Stop/save the active episode first."
+        )
+
+    if dataset.num_episodes <= 0:
+        log_message(logger, "⚠️ No saved episodes are available to delete.")
+        return dataset, None, True
+
+    deleted_episode_index = dataset.num_episodes - 1
+
+    # Close all writers before dataset_tools rewrites the dataset directory.
+    dataset.finalize()
+    log_message(logger, f"🗑️ Deleting previous episode {deleted_episode_index}...")
+
+    dataset_root = _dataset_root(cfg)
+    upload_ok = delete_episodes_from_dataset(
+        repo_id=cfg.dataset.repo_id,
+        episode_indices=[deleted_episode_index],
+        root=str(dataset_root),
+        push_to_hub=push_to_hub,
+        logger=logger,
+    )
+
+    resumed = _resume_dataset(cfg, logger)
+    log_message(
+        logger,
+        f"✅ Previous episode {deleted_episode_index} deleted; "
+        f"{resumed.num_episodes} saved episode(s) remain.",
+    )
+    return resumed, deleted_episode_index, upload_ok

@@ -205,7 +205,7 @@ class WebSocketManager {
 
   /**
    * Trigger an action for a specified duration
-   * @param {string} action - One of: 'reset', 'start_episode', 'stop_episode', 'save_dataset'
+   * @param {string} action - One of: 'reset', 'start_episode', 'stop_episode', 'delete_previous_episode', 'save_dataset'
    * @param {number} durationMs - Duration in milliseconds to keep action active
    * @returns {Promise<void>} - Resolves when action period is complete
    */
@@ -217,7 +217,7 @@ class WebSocketManager {
         return;
       }
 
-      const validActions = ['reset', 'recalibrate' , 'start_episode', 'stop_episode', 'save_dataset'];
+      const validActions = ['reset', 'recalibrate', 'start_episode', 'stop_episode', 'delete_previous_episode', 'save_dataset'];
       if (!validActions.includes(action)) {
         console.error('❌ Invalid action:', action);
         reject(new Error('Invalid action: ' + action));

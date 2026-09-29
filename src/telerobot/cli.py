@@ -14,6 +14,7 @@ try:
     from telerobot.dataset import (
         setup_dataset,
         checkpoint_dataset,
+        delete_previous_episode_checkpoint,
         end_active_episode,
         record_step,
         finalize_dataset,
@@ -30,6 +31,9 @@ except Exception as e:
         return None
 
     def checkpoint_dataset(*args, **kwargs):
+        return None
+
+    def delete_previous_episode_checkpoint(*args, **kwargs):
         return None
 
     def end_active_episode(*args, **kwargs):
@@ -167,6 +171,10 @@ def main():
     checkpoint_error = None
     checkpoint_thread = None
     checkpoint_results = Queue()
+    deleting_episode = False
+    delete_episode_error = None
+    delete_episode_thread = None
+    delete_episode_results = Queue()
     last_camera_timeout_warning = 0.0
     push_to_hub = cfg.dataset.push_to_hub if cfg.dataset else False
 
@@ -180,6 +188,8 @@ def main():
             finalized=False,
             checkpointing=checkpointing,
             checkpoint_error=checkpoint_error,
+            deleting_episode=deleting_episode,
+            delete_episode_error=delete_episode_error,
             episode_count=(dataset.num_episodes if dataset is not None else 0),
         )
 
@@ -200,6 +210,28 @@ def main():
         return threading.Thread(
             target=worker,
             name="telerobot-dataset-checkpoint",
+            daemon=False,
+        )
+
+    def start_delete_previous_episode(active_dataset):
+        """Delete the latest saved episode without blocking cameras or robot control."""
+        def worker():
+            try:
+                resumed_dataset, deleted_index, upload_ok = delete_previous_episode_checkpoint(
+                    active_dataset,
+                    cfg,
+                    push_to_hub,
+                    logger,
+                )
+                delete_episode_results.put(
+                    ("ok", (resumed_dataset, deleted_index, upload_ok))
+                )
+            except Exception as exc:
+                delete_episode_results.put(("error", exc))
+
+        return threading.Thread(
+            target=worker,
+            name="telerobot-delete-previous-episode",
             daemon=False,
         )
 
@@ -252,6 +284,39 @@ def main():
                         dataset = None
                     publish_runtime_status()
 
+            # Deleting an episode rewrites parquet/video metadata and may also push
+            # to the Hub, so collect its worker result without blocking the realtime loop.
+            if deleting_episode:
+                try:
+                    delete_status, delete_payload = delete_episode_results.get_nowait()
+                except Empty:
+                    pass
+                else:
+                    deleting_episode = False
+                    delete_episode_thread = None
+                    if delete_status == "ok":
+                        dataset, deleted_index, upload_ok = delete_payload
+                        if deleted_index is None:
+                            delete_episode_error = None
+                        elif upload_ok:
+                            delete_episode_error = None
+                            log_message(logger, f"🟢 Episode {deleted_index} deleted; writer resumed.")
+                        else:
+                            delete_episode_error = "Deleted locally; Hub update failed."
+                            log_message(
+                                logger,
+                                f"🟡 Episode {deleted_index} deleted locally; Hub update needs retrying.",
+                            )
+                    else:
+                        delete_episode_error = str(delete_payload)
+                        log_message(logger, f"❌ Delete previous episode failed: {delete_episode_error}")
+                        log_message(
+                            logger,
+                            "   Dataset writer may need to be reopened before more recording.",
+                        )
+                        dataset = None
+                    publish_runtime_status()
+
             # WebSocket messages always carry recording/reset actions. In VR mode
             # they also carry controller poses; leader mode ignores those poses.
             web_obs = teleop_device.last_observation
@@ -278,6 +343,8 @@ def main():
             elif action_str == 'start_episode' and not recording:
                 if checkpointing:
                     log_message(logger, "⏳ Dataset checkpoint still running; wait for it to finish before recording.")
+                elif deleting_episode:
+                    log_message(logger, "⏳ Previous episode deletion still running; wait for it to finish before recording.")
                 elif dataset is None:
                     log_message(logger, "⚠️ Dataset writer is unavailable; cannot start an episode.")
                 else:
@@ -298,11 +365,14 @@ def main():
                     log_message(logger, "⚠️ Save the active episode before creating a dataset checkpoint.")
                 elif checkpointing:
                     log_message(logger, "⏳ Dataset checkpoint already in progress.")
+                elif deleting_episode:
+                    log_message(logger, "⏳ Wait for previous episode deletion to finish before checkpointing.")
                 elif dataset is None:
                     log_message(logger, "⚠️ Dataset writer is unavailable; cannot create checkpoint.")
                 else:
                     checkpointing = True
                     checkpoint_error = None
+                    delete_episode_error = None
                     publish_runtime_status()
                     log_message(
                         logger,
@@ -310,6 +380,29 @@ def main():
                     )
                     checkpoint_thread = start_dataset_checkpoint(dataset)
                     checkpoint_thread.start()
+            elif action_str == 'delete_previous_episode':
+                if recording:
+                    log_message(logger, "⚠️ Stop/save the active episode before deleting the previous one.")
+                elif checkpointing:
+                    log_message(logger, "⏳ Wait for the dataset checkpoint to finish before deleting an episode.")
+                elif deleting_episode:
+                    log_message(logger, "⏳ Previous episode deletion already in progress.")
+                elif dataset is None:
+                    log_message(logger, "⚠️ Dataset writer is unavailable; cannot delete an episode.")
+                elif dataset.num_episodes <= 0:
+                    log_message(logger, "⚠️ No saved episodes are available to delete.")
+                    publish_runtime_status()
+                else:
+                    deleting_episode = True
+                    delete_episode_error = None
+                    checkpoint_error = None
+                    publish_runtime_status()
+                    log_message(
+                        logger,
+                        f"🗑️ Deleting previous saved episode {dataset.num_episodes - 1} in background...",
+                    )
+                    delete_episode_thread = start_delete_previous_episode(dataset)
+                    delete_episode_thread.start()
             else:
                 result = None
                 try:
@@ -420,6 +513,20 @@ def main():
                     dataset, _upload_ok = checkpoint_payload
                 else:
                     log_message(logger, f"❌ Dataset checkpoint failed during shutdown: {checkpoint_payload}")
+        except Empty:
+            pass
+
+        if delete_episode_thread is not None and delete_episode_thread.is_alive():
+            log_message(logger, "⏳ Waiting for previous episode deletion to finish before shutdown...")
+            delete_episode_thread.join()
+
+        try:
+            while True:
+                delete_status, delete_payload = delete_episode_results.get_nowait()
+                if delete_status == "ok":
+                    dataset, _deleted_index, _upload_ok = delete_payload
+                else:
+                    log_message(logger, f"❌ Episode deletion failed during shutdown: {delete_payload}")
         except Empty:
             pass
 
