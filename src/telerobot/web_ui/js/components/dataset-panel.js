@@ -13,6 +13,7 @@ AFRAME.registerComponent('dataset-panel', {
   init: function() {
     this.isCountingDown = false;
     this.isRecording = false;
+    this.isCheckpointing = false;
     this.countdownValue = 0;
     this.countdownTimer = null;
     this.datasetConfigured = !!(window.telerobotConfig && window.telerobotConfig.datasetConfigured);
@@ -21,12 +22,14 @@ AFRAME.registerComponent('dataset-panel', {
     this.onRecordButtonAction = this.onRecordButtonAction.bind(this);
     this.onSaveDatasetButtonAction = this.onSaveDatasetButtonAction.bind(this);
     this.onConnectionChange = this.onConnectionChange.bind(this);
+    this.onServerMessage = this.onServerMessage.bind(this);
 
     this.createPanel();
 
     // Subscribe to connection state changes
     if (window.webSocketManager) {
       window.webSocketManager.addConnectionChangeListener(this.onConnectionChange);
+      window.webSocketManager.addMessageListener(this.onServerMessage);
     }
   },
 
@@ -90,7 +93,7 @@ AFRAME.registerComponent('dataset-panel', {
       color: '#2196F3',
       hoverColor: '#42A5F5',
       pressedColor: '#1565C0',
-      text: 'Save Dataset',
+      text: 'Save Checkpoint',
       textWidth: width * 1.5,
       disabled: true
     });
@@ -180,9 +183,44 @@ AFRAME.registerComponent('dataset-panel', {
     }, 1000);
   },
 
+  onServerMessage: function(message) {
+    if (!message || message.type !== 'runtime_status') return;
+
+    if (typeof message.recording === 'boolean') {
+      this.isRecording = message.recording;
+    }
+    if (typeof message.checkpointing === 'boolean') {
+      this.isCheckpointing = message.checkpointing;
+    }
+
+    const isConnected = !!(window.webSocketManager && window.webSocketManager.isConnected);
+    const canUseDataset = isConnected && this.datasetConfigured && !this.isCheckpointing;
+
+    const recordBtnComp = this.recordButton.components['vr-button'];
+    if (recordBtnComp && !this.isCountingDown) {
+      recordBtnComp.setDisabled(!canUseDataset);
+      if (!this.isRecording) {
+        recordBtnComp.setColor('#4CAF50');
+        recordBtnComp.setText('Record Episode');
+      }
+    }
+
+    const saveBtnComp = this.saveDatasetButton.components['vr-button'];
+    if (saveBtnComp) {
+      saveBtnComp.setDisabled(!canUseDataset || this.isRecording);
+      saveBtnComp.setText(this.isCheckpointing ? 'Saving...' : 'Save Checkpoint');
+    }
+
+    if (this.isCheckpointing) {
+      this.countdownText.setAttribute('value', 'saving checkpoint...');
+    } else if (!this.isRecording && !this.isCountingDown) {
+      this.countdownText.setAttribute('value', message.checkpoint_error ? 'checkpoint failed' : 'not recording');
+    }
+  },
+
   onConnectionChange: function(status) {
     const isConnected = status === 'connected';
-    const canUseDataset = isConnected && this.datasetConfigured;
+    const canUseDataset = isConnected && this.datasetConfigured && !this.isCheckpointing;
 
     const recordBtnComp = this.recordButton.components['vr-button'];
     if (recordBtnComp && !this.isCountingDown) {
@@ -191,13 +229,21 @@ AFRAME.registerComponent('dataset-panel', {
 
     const saveBtnComp = this.saveDatasetButton.components['vr-button'];
     if (saveBtnComp) {
-      saveBtnComp.setDisabled(!canUseDataset);
+      saveBtnComp.setDisabled(!canUseDataset || this.isRecording);
     }
   },
 
   onSaveDatasetButtonAction: async function() {
     if (!window.webSocketManager || !window.webSocketManager.isConnected) {
       console.warn('⚠️ WebSocket not connected');
+      return;
+    }
+    if (this.isRecording) {
+      console.warn('⚠️ Save the active episode before checkpointing');
+      return;
+    }
+    if (this.isCheckpointing) {
+      console.warn('⏳ Dataset checkpoint already in progress');
       return;
     }
 
@@ -209,13 +255,13 @@ AFRAME.registerComponent('dataset-panel', {
 
     try {
       await window.webSocketManager.triggerAction('save_dataset');
-      console.log('💾 Dataset saved');
+      console.log('💾 Dataset checkpoint requested');
     } catch (error) {
       console.error('❌ save_dataset error:', error);
     } finally {
       if (buttonComponent) {
         buttonComponent.setDisabled(false);
-        buttonComponent.setText('Save Dataset');
+        buttonComponent.setText(this.isCheckpointing ? 'Saving...' : 'Save Checkpoint');
       }
     }
   },
@@ -227,6 +273,7 @@ AFRAME.registerComponent('dataset-panel', {
 
     if (window.webSocketManager) {
       window.webSocketManager.removeConnectionChangeListener(this.onConnectionChange);
+      window.webSocketManager.removeMessageListener(this.onServerMessage);
     }
     this.recordButton.removeEventListener('button-action', this.onRecordButtonAction);
     this.saveDatasetButton.removeEventListener('button-action', this.onSaveDatasetButtonAction);

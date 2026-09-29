@@ -1,7 +1,9 @@
 import argparse
 import json
+import threading
 import time
 from pathlib import Path
+from queue import Empty, Queue
 
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data  # noqa: F401 (imported conditionally)
@@ -11,6 +13,7 @@ from telerobot.controller import build_controller
 try:
     from telerobot.dataset import (
         setup_dataset,
+        checkpoint_dataset,
         end_active_episode,
         record_step,
         finalize_dataset,
@@ -24,6 +27,9 @@ except Exception as e:
     DATASET_AVAILABLE = False
 
     def setup_dataset(*args, **kwargs):
+        return None
+
+    def checkpoint_dataset(*args, **kwargs):
         return None
 
     def end_active_episode(*args, **kwargs):
@@ -157,7 +163,11 @@ def main():
     controller.capture_initial_observations()
 
     recording = False
-    finalized_dataset = False
+    checkpointing = False
+    checkpoint_error = None
+    checkpoint_thread = None
+    checkpoint_results = Queue()
+    last_camera_timeout_warning = 0.0
     push_to_hub = cfg.dataset.push_to_hub if cfg.dataset else False
 
     def publish_runtime_status():
@@ -165,8 +175,32 @@ def main():
             control_mode=cfg.teleoperation.mode,
             dataset_configured=dataset is not None,
             recording=recording,
-            finalized=finalized_dataset,
+            # A checkpoint is intentionally non-terminal. Keep finalized=False so
+            # existing clients do not lock the recording controls after a save.
+            finalized=False,
+            checkpointing=checkpointing,
+            checkpoint_error=checkpoint_error,
             episode_count=(dataset.num_episodes if dataset is not None else 0),
+        )
+
+    def start_dataset_checkpoint(active_dataset):
+        """Finalize/upload in a worker so robot control and camera streaming never stop."""
+        def worker():
+            try:
+                resumed_dataset, upload_ok = checkpoint_dataset(
+                    active_dataset,
+                    cfg,
+                    push_to_hub,
+                    logger,
+                )
+                checkpoint_results.put(("ok", (resumed_dataset, upload_ok)))
+            except Exception as exc:
+                checkpoint_results.put(("error", exc))
+
+        return threading.Thread(
+            target=worker,
+            name="telerobot-dataset-checkpoint",
+            daemon=False,
         )
 
     publish_runtime_status()
@@ -187,6 +221,36 @@ def main():
         while True:
             t0 = time.perf_counter()
             t_control = t_rerun = t_dataset = None  # TODO: Remove timing debug
+
+            # Collect the result of an asynchronous dataset checkpoint without ever
+            # blocking the robot/camera loop on Hugging Face network I/O.
+            if checkpointing:
+                try:
+                    checkpoint_status, checkpoint_payload = checkpoint_results.get_nowait()
+                except Empty:
+                    pass
+                else:
+                    checkpointing = False
+                    checkpoint_thread = None
+                    if checkpoint_status == "ok":
+                        dataset, upload_ok = checkpoint_payload
+                        checkpoint_error = None if upload_ok else "Hub upload failed; local checkpoint was saved."
+                        if upload_ok:
+                            log_message(logger, "🟢 Dataset writer resumed; ready for the next episode.")
+                        else:
+                            log_message(
+                                logger,
+                                "🟡 Dataset writer resumed after a local checkpoint; Hub upload needs retrying.",
+                            )
+                    else:
+                        checkpoint_error = str(checkpoint_payload)
+                        log_message(logger, f"❌ Dataset checkpoint failed: {checkpoint_error}")
+                        log_message(
+                            logger,
+                            "   Robot control/cameras are still running, but recording is disabled until the dataset is reopened.",
+                        )
+                        dataset = None
+                    publish_runtime_status()
 
             # WebSocket messages always carry recording/reset actions. In VR mode
             # they also carry controller poses; leader mode ignores those poses.
@@ -212,52 +276,81 @@ def main():
             if action_str == 'reset' and not controller.has_initial_position:
                 controller.reset()
             elif action_str == 'start_episode' and not recording:
-                # Begin a new recording episode (no-op if already recording)
-                log_message(logger, f"🔴 Recording episode {dataset.num_episodes if dataset is not None else '?'}...")
-                recording = True
-                finalized_dataset = False
-                publish_runtime_status()
+                if checkpointing:
+                    log_message(logger, "⏳ Dataset checkpoint still running; wait for it to finish before recording.")
+                elif dataset is None:
+                    log_message(logger, "⚠️ Dataset writer is unavailable; cannot start an episode.")
+                else:
+                    log_message(logger, f"🔴 Recording episode {dataset.num_episodes}...")
+                    recording = True
+                    checkpoint_error = None
+                    publish_runtime_status()
             elif action_str == 'stop_episode' and recording:
-                if cfg.teleoperation.mode == "vr":
-                    controller.reset()
-                # End the current recording episode
+                # Close the episode BEFORE any optional VR reset motion. Reset motion
+                # must never be recorded as part of the demonstration.
                 end_active_episode(dataset, logger)
                 recording = False
                 publish_runtime_status()
-            elif action_str == 'save_dataset' and not finalized_dataset:
-                # Finalize and save the entire dataset
-                finalize_dataset(dataset, push_to_hub, logger)
-                recording = False
-                finalized_dataset = True
-                publish_runtime_status()
+                if cfg.teleoperation.mode == "vr":
+                    controller.reset()
+            elif action_str == 'save_dataset':
+                if recording:
+                    log_message(logger, "⚠️ Save the active episode before creating a dataset checkpoint.")
+                elif checkpointing:
+                    log_message(logger, "⏳ Dataset checkpoint already in progress.")
+                elif dataset is None:
+                    log_message(logger, "⚠️ Dataset writer is unavailable; cannot create checkpoint.")
+                else:
+                    checkpointing = True
+                    checkpoint_error = None
+                    publish_runtime_status()
+                    log_message(
+                        logger,
+                        "💾 Dataset checkpoint started in background; robot control and camera streaming stay live.",
+                    )
+                    checkpoint_thread = start_dataset_checkpoint(dataset)
+                    checkpoint_thread.start()
             else:
                 result = None
-                if cfg.teleoperation.mode == "leader":
-                    # The leader produces the same named follower-joint action
-                    # dictionary that the VR IK path produces downstream.
-                    action = leader_device.get_action()
-                    if not leader_action_validated:
-                        expected_keys = set(duo_robot.action_features)
-                        actual_keys = set(action)
-                        if actual_keys != expected_keys:
-                            raise RuntimeError(
-                                "Leader/follower action features do not match. "
-                                f"Expected {sorted(expected_keys)}, got {sorted(actual_keys)}."
-                            )
-                        leader_action_validated = True
-                    obs = duo_robot.get_observation()
-                    duo_robot.send_action(action)
-                    controller.has_initial_position = False
-                    result = (obs, action)
-                elif web_obs is not None:
-                    was_collecting_pose = getattr(
-                        controller, "awaiting_recalibration", False
-                    )
-                    result = controller.process_vr_observation(web_obs)
-                    if was_collecting_pose and not getattr(
-                        controller, "awaiting_recalibration", False
-                    ):
-                        teleop_device.send_transform_status("finished")
+                try:
+                    if cfg.teleoperation.mode == "leader":
+                        # The leader produces the same named follower-joint action
+                        # dictionary that the VR IK path produces downstream.
+                        action = leader_device.get_action()
+                        if not leader_action_validated:
+                            expected_keys = set(duo_robot.action_features)
+                            actual_keys = set(action)
+                            if actual_keys != expected_keys:
+                                raise RuntimeError(
+                                    "Leader/follower action features do not match. "
+                                    f"Expected {sorted(expected_keys)}, got {sorted(actual_keys)}."
+                                )
+                            leader_action_validated = True
+                        obs = duo_robot.get_observation()
+                        # Leader-arm mode used to bypass the Cartesian workspace box
+                        # completely. Apply the controller's hard FK guard here too.
+                        action = controller.filter_joint_action(obs, action)
+                        duo_robot.send_action(action)
+                        controller.has_initial_position = False
+                        result = (obs, action)
+                    elif web_obs is not None:
+                        was_collecting_pose = getattr(
+                            controller, "awaiting_recalibration", False
+                        )
+                        result = controller.process_vr_observation(web_obs)
+                        if was_collecting_pose and not getattr(
+                            controller, "awaiting_recalibration", False
+                        ):
+                            teleop_device.send_transform_status("finished")
+                except TimeoutError as exc:
+                    # A short camera stall must not kill the whole teleop process.
+                    # Hold the previous servo targets by skipping this control cycle;
+                    # background camera threads can recover on the next iteration.
+                    now = time.monotonic()
+                    if now - last_camera_timeout_warning >= 1.0:
+                        logger.warning("Transient camera timeout; holding robot for this cycle: %s", exc)
+                        last_camera_timeout_warning = now
+                    result = None
 
                 t_control = time.perf_counter()  # TODO: Remove timing debug
 
@@ -313,13 +406,37 @@ def main():
         if leader_device is not None and leader_device.is_connected:
             leader_device.disconnect()
 
-        if DATASET_AVAILABLE and not finalized_dataset:
+        # Do not abandon a checkpoint thread halfway through a parquet finalize/upload.
+        # Waiting is safe during shutdown because the realtime control loop is already ending.
+        if checkpoint_thread is not None and checkpoint_thread.is_alive():
+            log_message(logger, "⏳ Waiting for dataset checkpoint to finish before shutdown...")
+            checkpoint_thread.join()
 
-            finalize_dataset(
-                dataset,
-                push_to_hub,
-                logger,
-            )
+        # If the checkpoint finished after the final loop iteration, adopt the resumed writer.
+        try:
+            while True:
+                checkpoint_status, checkpoint_payload = checkpoint_results.get_nowait()
+                if checkpoint_status == "ok":
+                    dataset, _upload_ok = checkpoint_payload
+                else:
+                    log_message(logger, f"❌ Dataset checkpoint failed during shutdown: {checkpoint_payload}")
+        except Empty:
+            pass
+
+        if DATASET_AVAILABLE and dataset is not None:
+            try:
+                # Preserve an in-progress episode on Ctrl+C instead of leaving an
+                # unterminated parquet/video file behind.
+                if dataset.has_pending_frames():
+                    log_message(logger, "💾 Saving the active episode before shutdown...")
+                    end_active_episode(dataset, logger)
+                finalize_dataset(
+                    dataset,
+                    push_to_hub,
+                    logger,
+                )
+            except Exception as exc:
+                log_message(logger, f"❌ Dataset shutdown finalize failed: {exc}")
 
 if __name__ == "__main__":
     main()

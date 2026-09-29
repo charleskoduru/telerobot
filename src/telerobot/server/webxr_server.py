@@ -39,8 +39,11 @@ class CameraStreamTrack(VideoStreamTrack):
         
         with self.frame_lock:
             if self.current_frame is not None:
-                # Convert BGR to RGB (OpenCV uses BGR by default)
-                rgb_frame = cv2.cvtColor(self.current_frame, cv2.COLOR_BGR2RGB)
+                # LeRobot's OpenCVCamera observation is already RGB by default.
+                # Converting it as if it were BGR swaps red/blue in the WebRTC feed
+                # (for example blue objects appear orange) even though saved episodes
+                # have correct colors. Keep the dataset/observation color order here.
+                rgb_frame = self.current_frame.copy()
             else:
                 # Create a black frame if no frame is available
                 rgb_frame = np.zeros((480, 640, 3), dtype=np.uint8)

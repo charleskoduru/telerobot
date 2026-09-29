@@ -9,6 +9,8 @@ class DesktopDashboard {
       dataset_configured: !!this.config.datasetConfigured,
       recording: false,
       finalized: false,
+      checkpointing: false,
+      checkpoint_error: null,
       episode_count: 0
     };
 
@@ -84,15 +86,15 @@ class DesktopDashboard {
 
     if (this.countingDown) {
       // Countdown text is managed by startCountdown().
-    } else if (this.runtime.finalized) {
-      this.recordingStatus.textContent = 'Dataset finalized';
+    } else if (this.runtime.checkpointing) {
+      this.recordingStatus.textContent = 'Saving/uploading checkpoint…';
     } else {
       this.recordingStatus.textContent = this.runtime.recording ? 'Recording' : 'Not recording';
     }
 
     const datasetReady = this.connected
       && this.runtime.dataset_configured
-      && !this.runtime.finalized;
+      && !this.runtime.checkpointing;
     this.recordButton.disabled = !datasetReady || this.countingDown;
     this.recordButton.textContent = this.runtime.recording ? 'Stop & save episode' : 'Start episode';
     this.recordButton.classList.toggle('button-danger', !!this.runtime.recording);
@@ -101,8 +103,12 @@ class DesktopDashboard {
 
     if (!this.runtime.dataset_configured) {
       this.helpText.textContent = 'No dataset is configured in config.yaml.';
-    } else if (this.runtime.finalized) {
-      this.helpText.textContent = 'Dataset finalized. Restart Telerobot to record more episodes.';
+    } else if (this.runtime.checkpointing) {
+      this.helpText.textContent = 'Checkpoint is saving/uploading in the background. Camera streams stay live; recording re-enables when it finishes.';
+    } else if (this.runtime.checkpoint_error) {
+      this.helpText.textContent = `Checkpoint failed: ${this.runtime.checkpoint_error}`;
+    } else if (this.connected) {
+      this.helpText.textContent = 'Controls are ready.';
     }
   }
 
@@ -187,7 +193,7 @@ class DesktopDashboard {
   }
 
   async finalizeDataset() {
-    if (!window.confirm('Finalize the dataset and upload it if push_to_hub is enabled?')) return;
+    if (!window.confirm('Save a dataset checkpoint and upload it if push_to_hub is enabled? Recording can continue when the checkpoint finishes.')) return;
     await this.sendAction('save_dataset', 800);
   }
 

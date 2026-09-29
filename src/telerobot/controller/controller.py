@@ -11,6 +11,7 @@ from lerobot.robots.bi_so_follower.bi_so_follower import BiSOFollower
 from telerobot.config import ArmConfig, RobotConfig
 from telerobot.controller.vr_processor import build_vr_to_arm_processor
 from telerobot.controller.kinematics import build_kinematics
+from telerobot.controller.safety import WorkspaceSafetyGuard
 
 #resets robot joint state
 def _reset_processor_state(processor) -> None:
@@ -30,15 +31,15 @@ class Controller(ABC):
 
     #This funcation defines how to init a robot
     def _build_processor(self, motor_names: list[str], arm_cfg: ArmConfig):
-        #kinematics_solver is used to calculate the joint angles needed to achieve the requested end effector pose. This does not move the robot. 
-
+        # kinematics_solver is used both for VR IK and for the final hard workspace
+        # guard that validates the command immediately before it reaches hardware.
         kinematics_solver = build_kinematics(
             arm_type=arm_cfg.type,
             motor_names=motor_names,
             regularization=arm_cfg.regularization,
         )
 
-        return build_vr_to_arm_processor(
+        processor = build_vr_to_arm_processor(
             motor_names=motor_names,
             kinematics_solver=kinematics_solver,
             end_effector_step_sizes=arm_cfg.end_effector_step_sizes,
@@ -46,6 +47,14 @@ class Controller(ABC):
             max_ee_step_m=arm_cfg.max_ee_step_m,
             gripper_speed_factor=arm_cfg.gripper_speed_factor,
         )
+        guard = WorkspaceSafetyGuard(
+            kinematics=kinematics_solver,
+            motor_names=motor_names,
+            end_effector_bounds=arm_cfg.end_effector_bounds,
+            enabled=arm_cfg.hard_workspace_guard,
+            margin_m=arm_cfg.workspace_guard_margin_m,
+        )
+        return processor, guard
 
     #This funcation's purpose is to init a single or multiple arms using 
     #the _build_processor funcation.
@@ -76,10 +85,14 @@ class Controller(ABC):
     def get_arm_observations(self) -> dict[str, RobotObservation]:
         pass
 
+    def filter_joint_action(self, obs: RobotObservation, action: RobotAction) -> RobotAction:
+        """Apply the final mode-independent workspace guard before hardware send."""
+        return action
+
     # Uses the VR processor to convert the VR controller pose into a target
     # robot joint action, sends that action to the robot, and returns both
     # the robot's current observation and the commanded joint action.
-    abstractmethod
+    @abstractmethod
     def process_vr_observation(self, vr_obs: dict) -> tuple[RobotObservation, RobotAction] | None:
         pass
 
@@ -92,7 +105,7 @@ class SingleController(Controller):
 
     def _build_processors(self) -> None:
         arm_cfg = self.cfg.arms[self.arm_name]
-        self.processor = self._build_processor(
+        self.processor, self.workspace_guard = self._build_processor(
             list(self.robot.bus.motors.keys()),
             arm_cfg=arm_cfg,
         )
@@ -128,6 +141,10 @@ class SingleController(Controller):
                 for key in joint_keys
             }
 
+            # Reset motion is still a hardware command, so keep the same hard
+            # Cartesian workspace guard active during the interpolation.
+            measured_obs = self.robot.get_observation()
+            action = self.filter_joint_action(measured_obs, action)
             self.robot.send_action(action)
             time.sleep(1.0 / fps)
 
@@ -151,6 +168,9 @@ class SingleController(Controller):
 
     def get_arm_observations(self) -> dict[str, RobotObservation]:
         return {self.arm_name: self.robot.get_observation()}
+
+    def filter_joint_action(self, obs: RobotObservation, action: RobotAction) -> RobotAction:
+        return self.workspace_guard.filter_action(obs, action)
 
     def process_vr_observation(self, vr_obs: dict) -> tuple[RobotObservation, RobotAction] | None:
         # Controller data may temporarily be None while the Quest/WebXR
@@ -184,6 +204,7 @@ class SingleController(Controller):
 
         obs = self.robot.get_observation()
         joint_action = self.processor((controller_obs, obs))
+        joint_action = self.filter_joint_action(obs, joint_action)
         self.robot.send_action(joint_action)
         return obs, joint_action
 
@@ -194,16 +215,16 @@ class BiController(Controller):
         self._build_processors()
 
     def _build_processors(self) -> None:
-        self.processors = {
-            "left": self._build_processor(
-                list(self.robot.left_arm.bus.motors.keys()),
-                arm_cfg=self.cfg.arms["left"],
-            ),
-            "right": self._build_processor(
-                list(self.robot.right_arm.bus.motors.keys()),
-                arm_cfg=self.cfg.arms["right"],
-            ),
-        }
+        left_processor, left_guard = self._build_processor(
+            list(self.robot.left_arm.bus.motors.keys()),
+            arm_cfg=self.cfg.arms["left"],
+        )
+        right_processor, right_guard = self._build_processor(
+            list(self.robot.right_arm.bus.motors.keys()),
+            arm_cfg=self.cfg.arms["right"],
+        )
+        self.processors = {"left": left_processor, "right": right_processor}
+        self.workspace_guards = {"left": left_guard, "right": right_guard}
 
     def capture_initial_observations(self) -> None:
         self.initial_left_obs = self.robot.left_arm.get_observation()
@@ -211,8 +232,20 @@ class BiController(Controller):
 
     def reset(self) -> None:
         print("Resetting robot to initial position...")
-        self.robot.right_arm.send_action(self.initial_right_obs)
-        self.robot.left_arm.send_action(self.initial_left_obs)
+
+        # Keep reset commands inside the same workspace limits as teleoperation.
+        for side, arm, initial_obs in (
+            ("right", self.robot.right_arm, self.initial_right_obs),
+            ("left", self.robot.left_arm, self.initial_left_obs),
+        ):
+            current_obs = arm.get_observation()
+            joint_action = {
+                key: float(value)
+                for key, value in initial_obs.items()
+                if isinstance(key, str) and key.endswith(".pos")
+            }
+            joint_action = self.workspace_guards[side].filter_action(current_obs, joint_action)
+            arm.send_action(joint_action)
 
         for processor in self.processors.values():
             _reset_processor_state(processor)
@@ -267,6 +300,7 @@ class BiController(Controller):
 
             obs = arm.get_observation()
             joint_action = self.processors[side]((controller_obs, obs))
+            joint_action = self.workspace_guards[side].filter_action(obs, joint_action)
             arm.send_action(joint_action)
 
             combined_obs.update({f"{side}_{k}": v for k, v in obs.items()})

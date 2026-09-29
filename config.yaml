@@ -64,6 +64,8 @@ arms:
 
   
     max_ee_step_m: 0.04 # from 0.2, limit how much the end effectors moves per frame (in meters) to avoid overshooting and instability
+    hard_workspace_guard: true # final FK safety check; applies to both VR and leader-arm commands
+    workspace_guard_margin_m: 0.005 # keep the predicted EE 5 mm inside the configured box
     gripper_speed_factor: 20.0 # gripper speed
 
 #Uncomment to enable episode recording to a LeRobot dataset

@@ -3,7 +3,6 @@ import shutil
 from pathlib import Path
 
 from lerobot.datasets.dataset_tools import delete_episodes
-from lerobot.datasets.image_writer import safe_stop_image_writer
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.constants import HF_LEROBOT_HOME
 from lerobot.datasets.pipeline_features import (
@@ -15,6 +14,44 @@ from lerobot.utils.constants import ACTION, OBS_STR
 from lerobot.processor import make_default_processors
 
 from telerobot.logger import log_message
+
+
+def _dataset_root(cfg) -> Path:
+    """Resolve the on-disk path used for the configured dataset."""
+    if cfg.dataset is None:
+        raise ValueError("Dataset configuration is required.")
+    return Path(cfg.dataset.root) if cfg.dataset.root is not None else HF_LEROBOT_HOME / cfg.dataset.repo_id
+
+
+def _resume_dataset(cfg, logger) -> LeRobotDataset:
+    """Re-open an existing dataset in write mode so more episodes can be appended."""
+    if cfg.dataset is None:
+        raise ValueError("Dataset configuration is required.")
+
+    dataset_root = _dataset_root(cfg)
+
+    # Current LeRobot versions expose resume() for write-mode append. Keep the
+    # constructor fallback for older versions used by some Telerobot installs.
+    resume_fn = getattr(LeRobotDataset, "resume", None)
+    if callable(resume_fn):
+        dataset = resume_fn(
+            repo_id=cfg.dataset.repo_id,
+            root=dataset_root,
+            streaming_encoding=True,
+        )
+    else:
+        dataset = LeRobotDataset(
+            repo_id=cfg.dataset.repo_id,
+            root=dataset_root,
+            streaming_encoding=True,
+        )
+
+    log_message(
+        logger,
+        f"📂 Dataset writer ready: {cfg.dataset.repo_id} "
+        f"({dataset.num_episodes} episodes so far)",
+    )
+    return dataset
 
 
 def setup_dataset(robot, cfg, logger) -> LeRobotDataset | None:
@@ -43,13 +80,13 @@ def setup_dataset(robot, cfg, logger) -> LeRobotDataset | None:
     # macOS, NVENC on Linux with Nvidia, etc.) for near-instant save_episode() calls.
     VCODEC = "auto"
 
-    dataset_root = Path(cfg.dataset.root) if cfg.dataset.root is not None else HF_LEROBOT_HOME / cfg.dataset.repo_id
+    dataset_root = _dataset_root(cfg)
     info_path = dataset_root / "meta" / "info.json"
     dataset_exists = info_path.exists()
 
     # If the dataset dir was initialised but no frames were ever recorded (0 total_frames),
-    # LeRobotDataset.__init__ will fail to find local parquet files and try to fetch from
-    # the Hub → 404. Treat this the same as a missing dataset by wiping the empty directory.
+    # LeRobotDataset can otherwise try to treat it as a readable/finalized dataset. Wipe only
+    # this empty shell so a fresh writer can be created cleanly.
     if dataset_exists:
         with open(info_path) as f:
             info = json.load(f)
@@ -58,23 +95,19 @@ def setup_dataset(robot, cfg, logger) -> LeRobotDataset | None:
             dataset_exists = False
 
     if dataset_exists:
-        dataset = LeRobotDataset(
-            repo_id=cfg.dataset.repo_id,
-            root=cfg.dataset.root,
-            streaming_encoding=True,
-        )
-        log_message(logger, f"📂 Resuming existing dataset: {cfg.dataset.repo_id} ({dataset.num_episodes} episodes so far)")
+        dataset = _resume_dataset(cfg, logger)
     else:
         dataset = LeRobotDataset.create(
             repo_id=cfg.dataset.repo_id,
             fps=cfg.fps,
-            root=cfg.dataset.root,
+            root=dataset_root,
             robot_type=robot.name,
             features=dataset_features,
             use_videos=True,
             streaming_encoding=True,
         )
         log_message(logger, f"📁 Dataset recording enabled: {cfg.dataset.repo_id}")
+
     log_message(logger, f"🎬 Streaming video encoding active (vcodec={VCODEC})")
     return dataset
 
@@ -126,35 +159,79 @@ def record_step(
     dataset.add_frame(frame)
 
 
-def finalize_dataset(dataset: LeRobotDataset | None, push_to_hub: bool, logger) -> None:
-    """Gracefully stop dataset recording and background writers.
-    
-    Optionally pushes the dataset to the Hugging Face Hub.
+def finalize_dataset(dataset: LeRobotDataset | None, push_to_hub: bool, logger) -> bool:
+    """Finalize a dataset so all parquet/video files are valid, then optionally upload it.
+
+    Returns True when the local finalize succeeded and either the Hub upload succeeded or no
+    upload was requested. Hub upload errors are logged but do not invalidate the local dataset.
     """
     if dataset is None:
-        return
+        return True
 
-    # Stop the image writer only when not using streaming encoding (streaming
-    # encoder threads manage their own lifecycle via finish_episode / cancel_episode).
-    streaming_encoder = getattr(dataset, "_streaming_encoder", None)
-    if streaming_encoder is None:
-        safe_stop_image_writer(dataset)
-    else:
-        streaming_encoder.close()
-    dataset.finalize()  # Flush buffered episode metadata to parquet files
+    if dataset.has_pending_frames():
+        raise RuntimeError(
+            "Cannot finalize while an episode still has unsaved frames. "
+            "Stop/save the current episode first."
+        )
+
+    # LeRobotDataset.finalize() already flushes streaming video encoders, closes parquet
+    # writers, writes footer metadata, and finalizes episode metadata. Calling the streaming
+    # encoder's close() separately is redundant and can make lifecycle handling brittle.
+    dataset.finalize()
     log_message(logger, f"📊 Total episodes recorded: {dataset.num_episodes}")
 
-    if push_to_hub:
-        if dataset.num_episodes == 0:
-            log_message(logger, "⚠️ No episodes recorded — skipping push to Hub.")
-            return
-        try:
-            log_message(logger, f"🚀 Pushing dataset '{dataset.repo_id}' to Hugging Face Hub...")
-            dataset.push_to_hub(tags=["TeLeRobot"])
-            log_message(logger, f"✅ Dataset '{dataset.repo_id}' pushed successfully.")
-        except Exception as e:
-            log_message(logger, f"❌ Failed to push dataset to Hub: {e}")
-            log_message(logger, "   Make sure you are logged in (run `huggingface-cli login`) or set HF_TOKEN.")
+    if not push_to_hub:
+        return True
+
+    if dataset.num_episodes == 0:
+        log_message(logger, "⚠️ No episodes recorded — skipping push to Hub.")
+        return True
+
+    try:
+        log_message(logger, f"🚀 Pushing dataset '{dataset.repo_id}' to Hugging Face Hub...")
+        dataset.push_to_hub(tags=["TeLeRobot"])
+        log_message(logger, f"✅ Dataset '{dataset.repo_id}' pushed successfully.")
+        return True
+    except Exception as e:
+        log_message(logger, f"❌ Failed to push dataset to Hub: {e}")
+        log_message(
+            logger,
+            "   Local data is finalized and safe. Check network/authentication, then retry the checkpoint.",
+        )
+        return False
+
+
+def checkpoint_dataset(
+    dataset: LeRobotDataset | None, cfg, push_to_hub: bool, logger
+) -> tuple[LeRobotDataset | None, bool]:
+    """Finalize/upload the current dataset and reopen it for more recording.
+
+    Returns ``(resumed_dataset, upload_ok)``. A Hub/network failure does not prevent the
+    local dataset from being reopened, so collection can continue safely after a failed
+    upload. This function is intended to run in a background thread; callers must not add
+    frames while it is running.
+    """
+    if dataset is None:
+        return None, True
+
+    if dataset.has_pending_frames():
+        raise RuntimeError(
+            "Cannot checkpoint while an episode is recording. Stop/save the episode first."
+        )
+
+    upload_ok = finalize_dataset(dataset, push_to_hub, logger)
+
+    # finalize() intentionally closes the writer. Re-open the same local dataset in write
+    # mode so the operator can immediately continue collecting episodes without restarting.
+    resumed = _resume_dataset(cfg, logger)
+    if upload_ok:
+        log_message(logger, "✅ Dataset checkpoint complete; recording can continue.")
+    else:
+        log_message(
+            logger,
+            "⚠️ Local checkpoint is safe and recording can continue, but the Hub upload failed.",
+        )
+    return resumed, upload_ok
 
 
 def delete_episodes_from_dataset(

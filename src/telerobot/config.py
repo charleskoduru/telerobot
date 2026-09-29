@@ -46,6 +46,8 @@ class ArmConfig:
     )
     max_ee_step_m: float = 0.20
     gripper_speed_factor: float = 20.0
+    hard_workspace_guard: bool = True
+    workspace_guard_margin_m: float = 0.005
     cameras: list[str] = field(default_factory=list)
 
 
@@ -172,6 +174,8 @@ def load_config(path: str | Path) -> RobotConfig:
             end_effector_bounds=arm.get("end_effector_bounds", {"min": [-1.0, -1.0, -1.0], "max": [1.0, 1.0, 1.0]}),
             max_ee_step_m=arm.get("max_ee_step_m", 0.20),
             gripper_speed_factor=arm.get("gripper_speed_factor", 20.0),
+            hard_workspace_guard=bool(arm.get("hard_workspace_guard", True)),
+            workspace_guard_margin_m=float(arm.get("workspace_guard_margin_m", 0.005)),
             cameras=arm_cameras,
         )
 
