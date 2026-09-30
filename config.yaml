@@ -8,30 +8,44 @@ robot:
 
 cameras:
   gripperCam:
-    index: "/dev/video18"
+    type: realsense
+    serial_number: "352122272219"
     width: 640
     height: 480
-    fourcc: "MJPG"
     fps: 30
+    use_depth: true
+    depth_width: 640
+    depth_height: 480
+    align_depth: true
     vr_gamma: 1.0      # Lower values brighten shadows.
     vr_gain: 1.0     # Multiplies the full image brightness.
     vr_brightness: 20    # Adds brightness after gain (0-100).
 
 
   isoCam:
-    index: "/dev/video12"
+    type: realsense
+    serial_number: "352122272219"
     width: 640
     height: 480
     fps: 30
+    use_depth: true
+    depth_width: 640
+    depth_height: 480
+    align_depth: true
     vr_gamma: 1.0
     vr_gain: 1.0
     vr_brightness: 15
 
   baseCam:
-    index: "/dev/video6"  # Change to the third camera's actual /dev/video path.
+    type: realsense
+    serial_number: "926522071325"
     width: 640
     height: 480
     fps: 30
+    use_depth: true
+    depth_width: 640
+    depth_height: 480
+    align_depth: true
     vr_gamma: 1.0
     vr_gain: 1.0
     vr_brightness: 0
