@@ -545,5 +545,14 @@ def main():
             except Exception as exc:
                 log_message(logger, f"❌ Dataset shutdown finalize failed: {exc}")
 
+        # Drain depth workers even if a disk failure prevented episode finalization.
+        depth = getattr(dataset, "_telerobot_depth", None)
+        if depth is not None:
+            depth.close_worker()
+        from telerobot.cameras.realsense import PairedRealSenseCamera
+        for camera in duo_robot.cameras.values():
+            if isinstance(camera, PairedRealSenseCamera) and camera.is_connected:
+                camera.disconnect()
+
 if __name__ == "__main__":
     main()

@@ -8,7 +8,7 @@ robot:
 
 cameras:
   gripperCam:
-    index: "/dev/video2"
+    index: "/dev/video18"
     width: 640
     height: 480
     fourcc: "MJPG"
@@ -18,8 +18,8 @@ cameras:
     vr_brightness: 20    # Adds brightness after gain (0-100).
 
 
-  bevCam:
-    index: "/dev/video8"
+  isoCam:
+    index: "/dev/video12"
     width: 640
     height: 480
     fps: 30
@@ -28,7 +28,7 @@ cameras:
     vr_brightness: 15
 
   baseCam:
-    index: "/dev/video14"  # Change to the third camera's actual /dev/video path.
+    index: "/dev/video6"  # Change to the third camera's actual /dev/video path.
     width: 640
     height: 480
     fps: 30
@@ -50,7 +50,7 @@ arms:
     type: so100
     port: /dev/ttyACM0
     use_degrees: true
-    cameras: [gripperCam, bevCam, baseCam]
+    cameras: [gripperCam, isoCam, baseCam]
     regularization: 1.0e-3 #adjust IK smoothing/stability (lower = more aggressive, higher = more stable), .5e-3, 1.0e-3, 3.0e-3 MAX: 
     end_effector_step_sizes: {  x: 0.45, y: 0.45, z: 0.45 } #scale between xr controller pose vs. robot end effector pose (lower = less sensitive, higher = more sensitive) 
     end_effector_bounds: #allowable workspace for the robot end effector (in meters), measure from the robot base j1. 
@@ -70,7 +70,7 @@ arms:
 
 #Uncomment to enable episode recording to a LeRobot dataset
 dataset:
-    repo_id: "charlieK123/gripper_Top_Base_Camera_Views_Continued_Extra"
+    repo_id: "charlieK123/rgb_depth_frame_dataset"
     single_task: "picking up forceps and sorting the forceps"
     push_to_hub: true  # set to true to push the dataset to Hugging Face Hub on save
     #root: "./datasets"  # optional: override dataset storage path

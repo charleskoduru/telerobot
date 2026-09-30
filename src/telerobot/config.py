@@ -4,26 +4,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from lerobot.robots.robot import Robot
 
 import yaml
-
-from lerobot.cameras.opencv.configuration_opencv import (OpenCVCameraConfig,Cv2Backends,)
-
-from lerobot.robots.robot import Robot
-from lerobot.robots.so_follower import SOFollower
-from lerobot.robots.so_follower.config_so_follower import SOFollowerConfig, SOFollowerRobotConfig
-from lerobot.robots.bi_so_follower.config_bi_so_follower import BiSOFollowerConfig
-from lerobot.robots.bi_so_follower.bi_so_follower import BiSOFollower
-
-
 
 #Defines containers used to setup the robot via congfig.yaml
 
 @dataclass
 class CameraConfig:
     """Configuration for a single camera."""
-    index: int | str
+    index: int | str = 0
+    type: str = "opencv"
+    serial_number: str | None = None
+    use_depth: bool = False
+    align_depth: bool = True
+    depth_width: int = 640
+    depth_height: int = 480
     width: int = 640
     height: int = 480
     fps: int = 30
@@ -116,6 +115,28 @@ def load_config(path: str | Path) -> RobotConfig:
     cameras: dict[str, CameraConfig] = {}
 
     for name, cam in raw.get("cameras", {}).items():
+        camera_type = str(cam.get("type", "opencv")).lower()
+        if camera_type not in {"opencv", "realsense"}:
+            raise ValueError(f"Camera '{name}': type must be opencv or realsense.")
+        use_depth = cam.get("use_depth", camera_type == "realsense")
+        align_depth = cam.get("align_depth", True)
+        if not isinstance(use_depth, bool) or not isinstance(align_depth, bool):
+            raise ValueError(f"Camera '{name}': use_depth and align_depth must be YAML booleans.")
+        serial = cam.get("serial_number")
+        if camera_type == "realsense":
+            if not isinstance(serial, str) or not serial or not serial.isdigit():
+                raise ValueError(f"Camera '{name}': specify serial_number in quotes, e.g. '123456789012'.")
+            if any(existing.serial_number == serial for existing in cameras.values()):
+                raise ValueError(f"Camera '{name}': RealSense serial_number is already in use.")
+            if fourcc := cam.get("fourcc"):
+                raise ValueError(f"Camera '{name}': fourcc is for OpenCV cameras only.")
+        elif use_depth:
+            raise ValueError(f"Camera '{name}': depth capture requires type: realsense.")
+        elif "index" not in cam:
+            raise ValueError(f"Camera '{name}': OpenCV requires index.")
+        for setting in ("width", "height", "fps", "depth_width", "depth_height"):
+            if setting in cam and (type(cam[setting]) is not int or cam[setting] <= 0):
+                raise ValueError(f"Camera '{name}': {setting} must be a positive integer.")
         vr_gamma = float(cam.get("vr_gamma", 1.0))
         vr_gain = float(cam.get("vr_gain", 1.0))
         vr_brightness = int(cam.get("vr_brightness", 0))
@@ -145,7 +166,13 @@ def load_config(path: str | Path) -> RobotConfig:
             )
 
         cameras[name] = CameraConfig(
-            index=cam["index"],
+            index=cam.get("index", 0),
+            type=camera_type,
+            serial_number=serial,
+            use_depth=use_depth,
+            align_depth=align_depth,
+            depth_width=cam.get("depth_width", cam.get("width", 640)),
+            depth_height=cam.get("depth_height", cam.get("height", 480)),
             width=cam.get("width", 640),
             height=cam.get("height", 480),
             fps=cam.get("fps", 30),
@@ -178,6 +205,11 @@ def load_config(path: str | Path) -> RobotConfig:
             workspace_guard_margin_m=float(arm.get("workspace_guard_margin_m", 0.005)),
             cameras=arm_cameras,
         )
+
+    for camera_name, camera in cameras.items():
+        owners = [arm_name for arm_name, arm in arms.items() if camera_name in arm.cameras]
+        if camera.type == "realsense" and len(owners) != 1:
+            raise ValueError(f"RealSense '{camera_name}' must belong to exactly one arm.")
 
     # Parse dataset config (optional)
     dataset_cfg: DatasetConfig | None = None
@@ -291,6 +323,12 @@ def load_robot(path: str | Path) -> tuple[Robot, RobotConfig]:
     Returns:
         A tuple of (robot_instance, config).
     """
+    from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig, Cv2Backends
+    from lerobot.robots.so_follower import SOFollower
+    from lerobot.robots.so_follower.config_so_follower import SOFollowerConfig, SOFollowerRobotConfig
+    from lerobot.robots.bi_so_follower.config_bi_so_follower import BiSOFollowerConfig
+    from lerobot.robots.bi_so_follower.bi_so_follower import BiSOFollower
+
     #cfg are the values from the config.yaml file.
     cfg = load_config(path)
 
@@ -326,7 +364,9 @@ def load_robot(path: str | Path) -> tuple[Robot, RobotConfig]:
             cameras=arm_config.cameras,
             id=f"{cfg.id}_{arm_name}",
         )
-        return SOFollower(single_config), cfg
+        robot = SOFollower(single_config)
+        _install_realsense_cameras(robot, cfg)
+        return robot, cfg
     else:
         # Dual-arm configuration
         duo_robot_config = BiSOFollowerConfig(
@@ -334,4 +374,23 @@ def load_robot(path: str | Path) -> tuple[Robot, RobotConfig]:
             right_arm_config=arm_configs["right"],
             id=cfg.id,
         )
-        return BiSOFollower(duo_robot_config), cfg
+        robot = BiSOFollower(duo_robot_config)
+        _install_realsense_cameras(robot, cfg)
+        return robot, cfg
+
+
+def _install_realsense_cameras(robot, cfg):
+    """Replace unconnected OpenCV placeholders before any robot connection.
+
+    The placeholders keep LeRobot's normal RGB observation feature schema.
+    Actual RGB and depth acquisition share our single RealSense pipeline.
+    """
+    from telerobot.cameras.realsense import PairedRealSenseCamera
+    targets = ({next(iter(cfg.arms)): robot} if len(cfg.arms) == 1 else
+               {"left": robot.left_arm, "right": robot.right_arm})
+    for arm_name, target in targets.items():
+        for name in cfg.arms[arm_name].cameras:
+            if cfg.cameras[name].type == "realsense":
+                target.cameras[name] = PairedRealSenseCamera(cfg.cameras[name])
+    if len(cfg.arms) == 2:
+        robot.cameras = {**robot.left_arm.cameras, **robot.right_arm.cameras}

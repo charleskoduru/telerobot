@@ -14,6 +14,7 @@ from lerobot.utils.constants import ACTION, OBS_STR
 from lerobot.processor import make_default_processors
 
 from telerobot.logger import log_message
+from telerobot.dataset.depth import DepthRecorder, recording_cameras, copy_depth_after_deletion
 
 
 def _dataset_root(cfg) -> Path:
@@ -83,6 +84,11 @@ def setup_dataset(robot, cfg, logger) -> LeRobotDataset | None:
     dataset_root = _dataset_root(cfg)
     info_path = dataset_root / "meta" / "info.json"
     dataset_exists = info_path.exists()
+    depth_cameras = recording_cameras(robot, cfg)
+    if (dataset_root / "meta" / "depth.json").exists() and not depth_cameras:
+        raise ValueError("This dataset records depth. Enable its RealSense depth cameras or use a new dataset.")
+    if list((dataset_root / "depth").glob("episode_*.incomplete")):
+        raise RuntimeError("Unfinished depth episode exists. Inspect/recover it before starting a new recording.")
 
     # If the dataset dir was initialised but no frames were ever recorded (0 total_frames),
     # LeRobotDataset can otherwise try to treat it as a readable/finalized dataset. Wipe only
@@ -108,6 +114,9 @@ def setup_dataset(robot, cfg, logger) -> LeRobotDataset | None:
         )
         log_message(logger, f"📁 Dataset recording enabled: {cfg.dataset.repo_id}")
 
+    if depth_cameras:
+        dataset._telerobot_depth = DepthRecorder(dataset_root, depth_cameras, cfg.fps, dataset.num_episodes)
+        log_message(logger, f"📏 Lossless depth recording enabled: {', '.join(depth_cameras)}")
     log_message(logger, f"🎬 Streaming video encoding active (vcodec={VCODEC})")
     return dataset
 
@@ -126,7 +135,12 @@ def end_active_episode(
         log_message(logger, "⚠️ No frames recorded, skipping empty episode.")
         return
 
+    depth = getattr(dataset, "_telerobot_depth", None)
+    if depth is not None:
+        depth.flush()
     dataset.save_episode()
+    if depth is not None:
+        depth.commit_episode(dataset.num_episodes - 1)
 
     log_message(
         logger,
@@ -156,7 +170,11 @@ def record_step(
         **action_frame,
         "task": cfg.dataset.single_task,
     }
+    depth = getattr(dataset, "_telerobot_depth", None)
+    packets = depth.prepare(obs, dataset.num_episodes) if depth is not None else None
     dataset.add_frame(frame)
+    if depth is not None:
+        depth.submit(packets)
 
 
 def finalize_dataset(dataset: LeRobotDataset | None, push_to_hub: bool, logger) -> bool:
@@ -177,6 +195,9 @@ def finalize_dataset(dataset: LeRobotDataset | None, push_to_hub: bool, logger) 
     # LeRobotDataset.finalize() already flushes streaming video encoders, closes parquet
     # writers, writes footer metadata, and finalizes episode metadata. Calling the streaming
     # encoder's close() separately is redundant and can make lifecycle handling brittle.
+    depth = getattr(dataset, "_telerobot_depth", None)
+    if depth is not None and depth.pending:
+        raise RuntimeError("Depth episode is incomplete; refusing to finalize/upload it.")
     dataset.finalize()
     log_message(logger, f"📊 Total episodes recorded: {dataset.num_episodes}")
 
@@ -189,7 +210,7 @@ def finalize_dataset(dataset: LeRobotDataset | None, push_to_hub: bool, logger) 
 
     try:
         log_message(logger, f"🚀 Pushing dataset '{dataset.repo_id}' to Hugging Face Hub...")
-        dataset.push_to_hub(tags=["TeLeRobot"])
+        _push_with_depth(dataset)
         log_message(logger, f"✅ Dataset '{dataset.repo_id}' pushed successfully.")
         return True
     except Exception as e:
@@ -224,6 +245,8 @@ def checkpoint_dataset(
     # finalize() intentionally closes the writer. Re-open the same local dataset in write
     # mode so the operator can immediately continue collecting episodes without restarting.
     resumed = _resume_dataset(cfg, logger)
+    if hasattr(dataset, "_telerobot_depth"):
+        resumed._telerobot_depth = dataset._telerobot_depth
     if upload_ok:
         log_message(logger, "✅ Dataset checkpoint complete; recording can continue.")
     else:
@@ -275,6 +298,9 @@ def delete_episodes_from_dataset(
         )
         log_message(logger, f"✅ New dataset has {new_dataset.num_episodes} episodes, {new_dataset.num_frames} frames")
 
+        # Preserve/reindex lossless depth alongside LeRobot's RGB rewrite.
+        copy_depth_after_deletion(dataset_root, tmp_root, episode_indices, dataset.num_episodes)
+
         # Replace original with the new dataset
         shutil.rmtree(dataset_root)
         tmp_root.rename(dataset_root)
@@ -284,7 +310,7 @@ def delete_episodes_from_dataset(
             try:
                 updated_dataset = LeRobotDataset(repo_id=repo_id, root=root)
                 log_message(logger, f"🚀 Pushing updated dataset '{repo_id}' to Hugging Face Hub...")
-                updated_dataset.push_to_hub(tags=["TeLeRobot"])
+                _push_with_depth(updated_dataset)
                 log_message(logger, f"✅ Dataset '{repo_id}' pushed successfully.")
             except Exception as exc:
                 # The local deletion is already complete and should not be rolled back
@@ -348,9 +374,27 @@ def delete_previous_episode_checkpoint(
     )
 
     resumed = _resume_dataset(cfg, logger)
+    if hasattr(dataset, "_telerobot_depth"):
+        resumed._telerobot_depth = dataset._telerobot_depth
     log_message(
         logger,
         f"✅ Previous episode {deleted_episode_index} deleted; "
         f"{resumed.num_episodes} saved episode(s) remain.",
     )
     return resumed, deleted_episode_index, upload_ok
+
+
+def _push_with_depth(dataset):
+    """Sync depth and remove stale depth episodes before LeRobot tags the upload."""
+    root = Path(dataset.root)
+    if (root / "meta" / "depth.json").exists():
+        if list((root / "depth").glob("episode_*.incomplete")):
+            raise RuntimeError("Cannot upload an unfinished depth episode.")
+        from huggingface_hub import HfApi
+        api = HfApi()
+        api.create_repo(repo_id=dataset.repo_id, repo_type="dataset", exist_ok=True)
+        api.upload_folder(repo_id=dataset.repo_id, repo_type="dataset", folder_path=root,
+                          allow_patterns=["depth/**", "meta/depth.json"],
+                          delete_patterns=["depth/**"],
+                          commit_message="Synchronize lossless depth episodes")
+    dataset.push_to_hub(tags=["TeLeRobot"])

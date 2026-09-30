@@ -1,0 +1,80 @@
+# Replace BOTH example serial numbers with the numbers from tools/list_realsense.py.
+# gripperCam + bevCam use RealSense; baseCam remains your existing USB RGB camera.
+# If you have only one RealSense, convert the other camera back to its OpenCV configuration.
+robot:
+  id: single_arm
+  fps: 30
+  use_rerun: false
+cameras:
+  gripperCam:
+    width: 640
+    height: 480
+    fps: 30
+    vr_gamma: 1.0
+    vr_gain: 1.0
+    vr_brightness: 20
+    type: realsense
+    serial_number: '111111111111'
+    use_depth: true
+    align_depth: true
+    depth_width: 640
+    depth_height: 480
+  bevCam:
+    width: 640
+    height: 480
+    fps: 30
+    vr_gamma: 1.0
+    vr_gain: 1.0
+    vr_brightness: 15
+    type: realsense
+    serial_number: '222222222222'
+    use_depth: true
+    align_depth: true
+    depth_width: 640
+    depth_height: 480
+  baseCam:
+    index: /dev/video14
+    width: 640
+    height: 480
+    fps: 30
+    vr_gamma: 1.0
+    vr_gain: 1.0
+    vr_brightness: 0
+teleoperation:
+  mode: leader
+  leader:
+    type: so101_leader
+    port: /dev/ttyACM1
+    id: so101_leader
+    use_degrees: true
+arms:
+  right:
+    type: so100
+    port: /dev/ttyACM0
+    use_degrees: true
+    cameras:
+    - gripperCam
+    - bevCam
+    - baseCam
+    regularization: 0.001
+    end_effector_step_sizes:
+      x: 0.45
+      y: 0.45
+      z: 0.45
+    end_effector_bounds:
+      min:
+      - 0.0417
+      - -0.2545
+      - -0.0585
+      max:
+      - 0.413
+      - 0.2829
+      - 0.3498
+    max_ee_step_m: 0.04
+    hard_workspace_guard: true
+    workspace_guard_margin_m: 0.005
+    gripper_speed_factor: 20.0
+dataset:
+  repo_id: charlieK123/forceps_RGBD
+  single_task: picking up forceps and sorting the forceps
+  push_to_hub: true
