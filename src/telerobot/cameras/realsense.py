@@ -28,8 +28,9 @@ def _intrinsics(profile):
 class PairedRealSenseCamera:
     """LeRobot-compatible RGB camera; recording retrieves the exact matching packet.
 
-    Only the capture thread reads the pipeline. Preview reads never change the
-    packet history used to match robot observations. Depth remains uint16.
+    Only the capture thread reads the pipeline. Every RGB read retains its
+    matching depth packet, including LeRobot's read_latest observation path.
+    Depth remains uint16.
     """
     def __init__(self, config):
         self.config = config
@@ -174,7 +175,7 @@ class PairedRealSenseCamera:
     def async_read(self, timeout_ms=200):
         packet = self._wait_packet(timeout_ms, new=True)
         self._last_sequence = packet.metadata["capture_sequence"]
-        self._observed.append(packet)
+        self._remember_packet(packet)
         return packet.rgb
 
     def read(self, *args, **kwargs):
@@ -182,12 +183,21 @@ class PairedRealSenseCamera:
 
     def read_latest(self, *args, **kwargs):
         # This project's preview expects the image alone, not (image, timestamp).
-        return self._wait_packet(200).rgb
+        packet = self._wait_packet(200)
+        self._remember_packet(packet)
+        return packet.rgb
+
+    def _remember_packet(self, packet):
+        with self._condition:
+            # Repeated preview reads of one capture must not consume the history.
+            if not self._observed or self._observed[-1] is not packet:
+                self._observed.append(packet)
 
     def packet_for_rgb(self, rgb):
-        for packet in reversed(self._observed):
-            if packet.rgb is rgb:
-                return packet
+        with self._condition:
+            for packet in reversed(self._observed):
+                if packet.rgb is rgb:
+                    return packet
         raise RuntimeError("Cannot match depth to the RGB observation; refusing an unsynchronized recording.")
 
     def disconnect(self):

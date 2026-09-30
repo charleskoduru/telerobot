@@ -1,0 +1,107 @@
+diff --git a/src/telerobot/cameras/realsense.py b/src/telerobot/cameras/realsense.py
+--- a/src/telerobot/cameras/realsense.py
++++ b/src/telerobot/cameras/realsense.py
+@@ -28,8 +28,9 @@
+ class PairedRealSenseCamera:
+     """LeRobot-compatible RGB camera; recording retrieves the exact matching packet.
+ 
+-    Only the capture thread reads the pipeline. Preview reads never change the
+-    packet history used to match robot observations. Depth remains uint16.
++    Only the capture thread reads the pipeline. Every RGB read retains its
++    matching depth packet, including LeRobot's read_latest observation path.
++    Depth remains uint16.
+     """
+     def __init__(self, config):
+         self.config = config
+@@ -174,7 +175,7 @@
+     def async_read(self, timeout_ms=200):
+         packet = self._wait_packet(timeout_ms, new=True)
+         self._last_sequence = packet.metadata["capture_sequence"]
+-        self._observed.append(packet)
++        self._remember_packet(packet)
+         return packet.rgb
+ 
+     def read(self, *args, **kwargs):
+@@ -182,12 +183,21 @@
+ 
+     def read_latest(self, *args, **kwargs):
+         # This project's preview expects the image alone, not (image, timestamp).
+-        return self._wait_packet(200).rgb
++        packet = self._wait_packet(200)
++        self._remember_packet(packet)
++        return packet.rgb
++
++    def _remember_packet(self, packet):
++        with self._condition:
++            # Repeated preview reads of one capture must not consume the history.
++            if not self._observed or self._observed[-1] is not packet:
++                self._observed.append(packet)
+ 
+     def packet_for_rgb(self, rgb):
+-        for packet in reversed(self._observed):
+-            if packet.rgb is rgb:
+-                return packet
++        with self._condition:
++            for packet in reversed(self._observed):
++                if packet.rgb is rgb:
++                    return packet
+         raise RuntimeError("Cannot match depth to the RGB observation; refusing an unsynchronized recording.")
+ 
+     def disconnect(self):
+diff --git a/tests/test_rgbd.py b/tests/test_rgbd.py
+--- a/tests/test_rgbd.py
++++ b/tests/test_rgbd.py
+@@ -67,6 +67,30 @@
+ 
+ 
+ class PairingTests(unittest.TestCase):
++    def test_read_latest_retains_pair_after_capture_advances(self):
++        cam = camera()
++        cam._connected = True
++        first = packet(1)
++        cam._latest = first
++        rgb = cam.read_latest()
++        cam._latest = packet(2)
++        cam.read_latest()  # Preview may read again before recording this observation.
++        self.assertIs(cam.packet_for_rgb(rgb), first)
++        with self.assertRaisesRegex(RuntimeError, "match depth"):
++            cam.packet_for_rgb(rgb.copy())
++
++    def test_repeated_preview_reads_do_not_evict_observation(self):
++        cam = camera()
++        cam._connected = True
++        first = packet(1)
++        cam._latest = first
++        rgb = cam.async_read()
++        cam._latest = packet(2)
++        for _ in range(100):
++            cam.read_latest()
++        self.assertIs(cam.packet_for_rgb(rgb), first)
++        self.assertEqual(len(cam._observed), 2)
++
+     def test_preview_does_not_replace_observation_depth(self):
+         cam = camera()
+         cam._connected = True
+@@ -286,6 +310,20 @@
+         self.assertEqual(self.dataset.num_episodes, 2)
+         self.assertTrue((self.root / "depth/episode_000001/episode.json").exists())
+ 
++    def test_record_from_lerobot_read_latest_observation(self):
++        self.cam._connected = True
++        first = packet(1)
++        self.cam._latest = first
++        obs = {"bevCam": self.cam.read_latest()}
++        self.cam._latest = packet(2)
++        self.cam.read_latest()
++        self.api.record_step(self.dataset, self.cfg, obs, {"joint": 1.0})
++        self.api.end_active_episode(self.dataset, self.logger)
++        folder = self.root / "depth/episode_000000"
++        row = json.loads((folder / "frames.jsonl").read_text())
++        self.assertEqual(row["cameras"]["bevCam"]["capture_sequence"], 1)
++        np.testing.assert_array_equal(np.load(folder / "bevCam/frame_000000.npy"), first.depth)
++
+     def test_rgb_save_failure_keeps_depth_incomplete(self):
+         self.add()
+         with patch.object(self.dataset, "save_episode", side_effect=OSError("RGB save failed")):
+
+         

@@ -67,6 +67,30 @@ class ConfigTests(unittest.TestCase):
 
 
 class PairingTests(unittest.TestCase):
+    def test_read_latest_retains_pair_after_capture_advances(self):
+        cam = camera()
+        cam._connected = True
+        first = packet(1)
+        cam._latest = first
+        rgb = cam.read_latest()
+        cam._latest = packet(2)
+        cam.read_latest()  # Preview may read again before recording this observation.
+        self.assertIs(cam.packet_for_rgb(rgb), first)
+        with self.assertRaisesRegex(RuntimeError, "match depth"):
+            cam.packet_for_rgb(rgb.copy())
+
+    def test_repeated_preview_reads_do_not_evict_observation(self):
+        cam = camera()
+        cam._connected = True
+        first = packet(1)
+        cam._latest = first
+        rgb = cam.async_read()
+        cam._latest = packet(2)
+        for _ in range(100):
+            cam.read_latest()
+        self.assertIs(cam.packet_for_rgb(rgb), first)
+        self.assertEqual(len(cam._observed), 2)
+
     def test_preview_does_not_replace_observation_depth(self):
         cam = camera()
         cam._connected = True
@@ -285,6 +309,20 @@ class DatasetIntegrationTests(unittest.TestCase):
         self.api.end_active_episode(self.dataset, self.logger)
         self.assertEqual(self.dataset.num_episodes, 2)
         self.assertTrue((self.root / "depth/episode_000001/episode.json").exists())
+
+    def test_record_from_lerobot_read_latest_observation(self):
+        self.cam._connected = True
+        first = packet(1)
+        self.cam._latest = first
+        obs = {"bevCam": self.cam.read_latest()}
+        self.cam._latest = packet(2)
+        self.cam.read_latest()
+        self.api.record_step(self.dataset, self.cfg, obs, {"joint": 1.0})
+        self.api.end_active_episode(self.dataset, self.logger)
+        folder = self.root / "depth/episode_000000"
+        row = json.loads((folder / "frames.jsonl").read_text())
+        self.assertEqual(row["cameras"]["bevCam"]["capture_sequence"], 1)
+        np.testing.assert_array_equal(np.load(folder / "bevCam/frame_000000.npy"), first.depth)
 
     def test_rgb_save_failure_keeps_depth_incomplete(self):
         self.add()

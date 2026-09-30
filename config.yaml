@@ -24,11 +24,11 @@ cameras:
 
   isoCam:
     type: realsense
-    serial_number: "352122272219"
+    serial_number: "027122062216"
     width: 640
     height: 480
     fps: 30
-    use_depth: true
+    use_depth: false
     depth_width: 640
     depth_height: 480
     align_depth: true
@@ -42,7 +42,7 @@ cameras:
     width: 640
     height: 480
     fps: 30
-    use_depth: true
+    use_depth: false
     depth_width: 640
     depth_height: 480
     align_depth: true
