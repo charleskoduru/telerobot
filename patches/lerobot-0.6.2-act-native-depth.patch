@@ -1,0 +1,275 @@
+--- a/src/lerobot/policies/act/configuration_act.py
++++ b/src/lerobot/policies/act/configuration_act.py
+@@ -34,8 +34,10 @@
+             - At least one key starting with "observation.image is required as an input.
+               AND/OR
+             - The key "observation.environment_state" is required as input.
+-        - If there are multiple keys beginning with "observation.images." they are treated as multiple camera
+-          views. Right now we only support all images having the same shape.
++        - If there are multiple keys beginning with "observation.images." they are treated as multiple visual
++          inputs. RGB features must have three channels and native depth features must have one channel.
++          Spatial resolutions may vary as long as the resulting backbone feature maps have the same number of
++          pixels.
+         - May optionally work without an "observation.state" key for the proprioceptive robot state.
+         - "action" is required as an output key.
+ 
+@@ -162,6 +164,16 @@
+     def validate_features(self) -> None:
+         if not self.image_features and not self.env_state_feature:
+             raise ValueError("You must provide at least one image or the environment state among the inputs.")
++        invalid_visuals = {
++            key: feature.shape
++            for key, feature in self.image_features.items()
++            if len(feature.shape) != 3 or feature.shape[0] not in (1, 3)
++        }
++        if invalid_visuals:
++            raise ValueError(
++                "ACT visual inputs must be CHW with one channel for native depth "
++                f"or three channels for RGB. Invalid features: {invalid_visuals}"
++            )
+ 
+     @property
+     def observation_delta_indices(self) -> None:
+--- a/src/lerobot/policies/act/modeling_act.py
++++ b/src/lerobot/policies/act/modeling_act.py
+@@ -80,14 +80,16 @@
+                 "params": [
+                     p
+                     for n, p in self.named_parameters()
+-                    if not n.startswith("model.backbone") and p.requires_grad
++                    if not n.startswith(("model.backbone", "model.depth_backbone"))
++                    and p.requires_grad
+                 ]
+             },
+             {
+                 "params": [
+                     p
+                     for n, p in self.named_parameters()
+-                    if n.startswith("model.backbone") and p.requires_grad
++                    if n.startswith(("model.backbone", "model.depth_backbone"))
++                    and p.requires_grad
+                 ],
+                 "lr": self.config.optimizer_lr_backbone,
+             },
+@@ -330,17 +332,31 @@
+                 create_sinusoidal_pos_embedding(num_input_token_encoder, config.dim_model).unsqueeze(0),
+             )
+ 
+-        # Backbone for image feature extraction.
++        # Separate backbones keep metric depth distinct from RGB. PolicyFeature
++        # does not retain dataset ``info`` metadata, so one channel is the
++        # unambiguous native-depth signal while three channels means RGB.
+         if self.config.image_features:
+-            backbone_model = getattr(torchvision.models, config.vision_backbone)(
+-                replace_stride_with_dilation=[False, False, config.replace_final_stride_with_dilation],
+-                weights=config.pretrained_backbone_weights,
+-                norm_layer=FrozenBatchNorm2d,
+-            )
+-            # Note: The assumption here is that we are using a ResNet model (and hence layer4 is the final
+-            # feature map).
+-            # Note: The forward method of this returns a dict: {"feature_map": output}.
+-            self.backbone = IntermediateLayerGetter(backbone_model, return_layers={"layer4": "feature_map"})
++            self.image_is_depth = [
++                feature.shape[0] == 1 for feature in self.config.image_features.values()
++            ]
++            has_rgb = any(not is_depth for is_depth in self.image_is_depth)
++            has_depth = any(self.image_is_depth)
++
++            self.backbone = None
++            self.depth_backbone = None
++            backbone_out_channels = None
++            if has_rgb:
++                self.backbone, backbone_out_channels = self._build_visual_backbone(
++                    config, in_channels=3
++                )
++            if has_depth:
++                self.depth_backbone, depth_out_channels = self._build_visual_backbone(
++                    config, in_channels=1
++                )
++                if backbone_out_channels is None:
++                    backbone_out_channels = depth_out_channels
++                elif backbone_out_channels != depth_out_channels:
++                    raise RuntimeError("RGB and depth backbones produced different channel counts.")
+ 
+         # Transformer (acts as VAE decoder when training with the variational objective).
+         self.encoder = ACTEncoder(config)
+@@ -359,7 +375,13 @@
+         self.encoder_latent_input_proj = nn.Linear(config.latent_dim, config.dim_model)
+         if self.config.image_features:
+             self.encoder_img_feat_input_proj = nn.Conv2d(
+-                backbone_model.fc.in_features, config.dim_model, kernel_size=1
++                backbone_out_channels, config.dim_model, kernel_size=1
++            )
++            # 0 = RGB, 1 = native metric depth. Only add this parameter when
++            # depth is present so existing RGB-only ACT checkpoints remain
++            # state-dict compatible after applying the patch.
++            self.encoder_visual_modality_embed = (
++                nn.Embedding(2, config.dim_model) if has_depth else None
+             )
+         # Transformer encoder positional embeddings.
+         n_1d_tokens = 1  # for the latent
+@@ -380,6 +402,54 @@
+ 
+         self._reset_parameters()
+ 
++    @staticmethod
++    def _build_visual_backbone(
++        config: ACTConfig, in_channels: int
++    ) -> tuple[IntermediateLayerGetter, int]:
++        """Create a ResNet backbone for RGB or one-channel metric depth.
++
++        The depth stem is initialized from the mean of the pretrained RGB stem
++        instead of repeating depth to three channels. The remainder of the
++        network starts from the requested ResNet weights but is fully separate
++        from the RGB backbone and can learn depth-specific filters.
++        """
++        backbone_model = getattr(torchvision.models, config.vision_backbone)(
++            replace_stride_with_dilation=[
++                False,
++                False,
++                config.replace_final_stride_with_dilation,
++            ],
++            weights=config.pretrained_backbone_weights,
++            norm_layer=FrozenBatchNorm2d,
++        )
++        if in_channels == 1:
++            rgb_stem = backbone_model.conv1
++            depth_stem = nn.Conv2d(
++                1,
++                rgb_stem.out_channels,
++                kernel_size=rgb_stem.kernel_size,
++                stride=rgb_stem.stride,
++                padding=rgb_stem.padding,
++                dilation=rgb_stem.dilation,
++                groups=rgb_stem.groups,
++                bias=rgb_stem.bias is not None,
++                padding_mode=rgb_stem.padding_mode,
++            )
++            with torch.no_grad():
++                depth_stem.weight.copy_(rgb_stem.weight.mean(dim=1, keepdim=True))
++                if rgb_stem.bias is not None:
++                    depth_stem.bias.copy_(rgb_stem.bias)
++            backbone_model.conv1 = depth_stem
++        elif in_channels != 3:
++            raise ValueError(f"Unsupported ACT visual channel count: {in_channels}")
++
++        out_channels = backbone_model.fc.in_features
++        backbone = IntermediateLayerGetter(
++            backbone_model,
++            return_layers={"layer4": "feature_map"},
++        )
++        return backbone, out_channels
++
+     def _reset_parameters(self):
+         """Xavier-uniform initialization of the transformer parameters as in the original code."""
+         for p in chain(self.encoder.parameters(), self.decoder.parameters()):
+@@ -480,10 +550,26 @@
+             # For a list of images, the H and W may vary but H*W is constant.
+             # NOTE: If modifying this section, verify on MPS devices that
+             # gradients remain stable (no explosions or NaNs).
+-            for img in batch[OBS_IMAGES]:
+-                cam_features = self.backbone(img)["feature_map"]
++            for img, is_depth in zip(batch[OBS_IMAGES], self.image_is_depth, strict=True):
++                expected_channels = 1 if is_depth else 3
++                if img.shape[1] != expected_channels:
++                    modality = "depth" if is_depth else "RGB"
++                    raise ValueError(
++                        f"ACT expected {expected_channels} channels for {modality}, "
++                        f"got tensor shape {tuple(img.shape)}."
++                    )
++                backbone = self.depth_backbone if is_depth else self.backbone
++                if backbone is None:
++                    raise RuntimeError("Required ACT visual backbone was not initialized.")
++                cam_features = backbone(img)["feature_map"]
+                 cam_pos_embed = self.encoder_cam_feat_pos_embed(cam_features).to(dtype=cam_features.dtype)
+                 cam_features = self.encoder_img_feat_input_proj(cam_features)
++                if self.encoder_visual_modality_embed is not None:
++                    modality_index = 1 if is_depth else 0
++                    modality_embed = self.encoder_visual_modality_embed.weight[modality_index].view(
++                        1, -1, 1, 1
++                    )
++                    cam_pos_embed = cam_pos_embed + modality_embed.to(dtype=cam_pos_embed.dtype)
+ 
+                 # Rearrange features to (sequence, batch, dim).
+                 cam_features = einops.rearrange(cam_features, "b c h w -> (h w) b c")
+--- a/src/lerobot/processor/normalize_processor.py
++++ b/src/lerobot/processor/normalize_processor.py
+@@ -333,6 +333,13 @@
+         if norm_mode == NormalizationMode.IDENTITY or key not in self._tensor_stats:
+             return tensor
+ 
++        # Native depth cameras commonly provide uint16 millimetres. Arithmetic
++        # normalization must happen in floating point; otherwise moving the
++        # floating-point dataset statistics to tensor.dtype can overflow or
++        # truncate them during live rollout.
++        if not tensor.is_floating_point():
++            tensor = tensor.to(dtype=torch.float32)
++
+         if norm_mode not in (
+             NormalizationMode.MEAN_STD,
+             NormalizationMode.MIN_MAX,
+--- /dev/null
++++ b/tests/policies/act/test_native_depth.py
+@@ -0,0 +1,62 @@
++"""Native one-channel depth behavior for ACT."""
++
++import torch
++
++from lerobot.configs.types import FeatureType, PolicyFeature
++from lerobot.policies.act.configuration_act import ACTConfig
++from lerobot.policies.act.modeling_act import ACTPolicy
++from lerobot.utils.constants import ACTION, OBS_STATE
++
++
++def test_act_uses_separate_one_channel_depth_backbone():
++    config = ACTConfig(
++        input_features={
++            OBS_STATE: PolicyFeature(type=FeatureType.STATE, shape=(6,)),
++            "observation.images.gripperCam": PolicyFeature(
++                type=FeatureType.VISUAL, shape=(3, 64, 64)
++            ),
++            "observation.images.gripperCam_depth": PolicyFeature(
++                type=FeatureType.VISUAL, shape=(1, 64, 64)
++            ),
++        },
++        output_features={ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(6,))},
++        pretrained_backbone_weights=None,
++        chunk_size=2,
++        n_action_steps=2,
++        use_vae=False,
++        dim_model=32,
++        n_heads=2,
++        dim_feedforward=64,
++        n_encoder_layers=1,
++        n_decoder_layers=1,
++    )
++    policy = ACTPolicy(config)
++
++    assert policy.model.backbone["conv1"].in_channels == 3
++    assert policy.model.depth_backbone["conv1"].in_channels == 1
++    assert policy.model.encoder_visual_modality_embed.num_embeddings == 2
++
++    batch = {
++        OBS_STATE: torch.zeros(1, 6),
++        "observation.images.gripperCam": torch.rand(1, 3, 64, 64),
++        "observation.images.gripperCam_depth": torch.rand(1, 1, 64, 64),
++    }
++    actions = policy.predict_action_chunk(batch)
++    assert actions.shape == (1, 2, 6)
++
++
++def test_act_rejects_visuals_that_are_neither_rgb_nor_depth():
++    config = ACTConfig(
++        input_features={
++            "observation.images.bad": PolicyFeature(
++                type=FeatureType.VISUAL, shape=(2, 64, 64)
++            )
++        },
++        output_features={ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(6,))},
++    )
++    try:
++        config.validate_features()
++    except ValueError as error:
++        assert "one channel" in str(error)
++    else:
++        raise AssertionError("Two-channel ACT visual was accepted")
