@@ -1,0 +1,70 @@
+diff --git a/config.yaml b/config.yaml
+index d735d7a..6ddedf9 100644
+--- a/config.yaml
++++ b/config.yaml
+@@ -11,5 +11,9 @@ teleoperation:
+     viewer: true
+     passive_force_compensation: true
+ 
++    # Simulation zero-offsets in degrees. J5 is wrist_roll.
++    joint_offsets_deg:
++      wrist_roll: -90.0
++
+   leader:
+     type: so101_leader
+diff --git a/src/telerobot/config.py b/src/telerobot/config.py
+index 2ed710b..0a3896d 100644
+--- a/src/telerobot/config.py
++++ b/src/telerobot/config.py
+@@ -14,6 +14,7 @@ class SimulationConfig:
+     gripper_stiffness: float = 20.0
+     gripper_damping: float = 3.0
+     force_limit: float = 10.0
++    joint_offsets_deg: dict[str, float] = field(default_factory=dict)
+ 
+ 
+ @dataclass
+@@ -46,6 +47,10 @@ def load_config(path: str | Path):
+                 simulation_section.get("gripper_damping", 3.0)
+             ),
+             force_limit=float(simulation_section.get("force_limit", 10.0)),
++            joint_offsets_deg={
++                str(name): float(value)
++                for name, value in (simulation_section.get("joint_offsets_deg", {}) or {}).items()
++            },
+         )
+ 
+     leader_cfg = None
+diff --git a/src/telerobot/simulation/so101_robot.py b/src/telerobot/simulation/so101_robot.py
+index cc768b4..6b387dc 100644
+--- a/src/telerobot/simulation/so101_robot.py
++++ b/src/telerobot/simulation/so101_robot.py
+@@ -10,8 +10,12 @@ class SimulatedSO101:
+             alpha = float(np.clip(float(value) / 100.0, 0.0, 1.0))
+             return lower + alpha * (upper - lower)
+ 
+-        # Simulation mode currently requires use_degrees: true.
+-        target = math.radians(float(value))
++        # Simulation mode currently requires use_degrees: true. Apply a
++        # configurable zero-offset before converting the logical leader value
++        # into the URDF joint angle. Example: wrist_roll=-90 rotates J5 90 deg
++        # clockwise in the current SO-101 simulation axis convention.
++        offset_deg = float(self.sim_cfg.joint_offsets_deg.get(name, 0.0))
++        target = math.radians(float(value) + offset_deg)
+         return float(np.clip(target, lower, upper))
+ 
+     def _urdf_to_logical(self, name: str, value_rad: float) -> float:
+@@ -21,7 +25,10 @@ class SimulatedSO101:
+                 return 0.0
+             alpha = (float(value_rad) - lower) / (upper - lower)
+             return float(np.clip(alpha * 100.0, 0.0, 100.0))
+-        return math.degrees(float(value_rad))
++        # Undo the simulation-only zero-offset so observations remain in the
++        # same logical joint coordinates as the leader arm.
++        offset_deg = float(self.sim_cfg.joint_offsets_deg.get(name, 0.0))
++        return math.degrees(float(value_rad)) - offset_deg
+ 
+     def connect(self, calibrate: bool = True) -> None:
+         del calibrate  # Compatibility with the physical LeRobot robot API.
+
+         
