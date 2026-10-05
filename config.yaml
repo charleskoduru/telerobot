@@ -70,8 +70,8 @@ cameras:
     vr_brightness: 0
     simulation:
       attach_to: shoulder_link
-      position: [0.00, 0.00, 0.04 ]
-      look_at: [0.20, 0.0, -0.05]
+      position: [-0.04, 0.00, 0.03 ]
+      look_at: [-1.00, 0.00, 0.00]
       up: [0.0, 0.0, 1.0]
       near: 0.03
       far: 3.0
