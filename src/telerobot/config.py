@@ -69,10 +69,26 @@ class LeaderConfig:
 
 
 @dataclass
+class SimulationConfig:
+    """Configuration for the SAPIEN SO-101 simulation target."""
+    control_source: str = "leader"  # leader | vr
+    physics_hz: int = 240
+    viewer: bool = True
+    passive_force_compensation: bool = True
+    urdf_path: str | None = None
+    arm_stiffness: float = 40.0
+    arm_damping: float = 5.0
+    gripper_stiffness: float = 20.0
+    gripper_damping: float = 3.0
+    force_limit: float = 10.0
+
+
+@dataclass
 class TeleoperationConfig:
-    """Select the active motion-command source."""
+    """Select a physical or simulated target and its command source."""
     mode: str = "vr"
     leader: LeaderConfig | None = None
+    simulation: SimulationConfig | None = None
 
 
 @dataclass
@@ -229,8 +245,43 @@ def load_config(path: str | Path) -> RobotConfig:
     # Parse teleoperation mode. Missing section preserves the original VR behavior.
     teleoperation_section = raw.get("teleoperation", {}) or {}
     teleoperation_mode = str(teleoperation_section.get("mode", "vr")).lower()
-    if teleoperation_mode not in {"vr", "leader"}:
-        raise ValueError("teleoperation.mode must be either 'vr' or 'leader'.")
+    if teleoperation_mode not in {"vr", "leader", "simulation"}:
+        raise ValueError(
+            "teleoperation.mode must be 'vr', 'leader', or 'simulation'."
+        )
+
+    simulation_cfg: SimulationConfig | None = None
+    simulation_section = teleoperation_section.get("simulation", {}) or {}
+    if teleoperation_mode == "simulation" or simulation_section:
+        control_source = str(
+            simulation_section.get("control_source", "leader")
+        ).lower()
+        if control_source not in {"vr", "leader"}:
+            raise ValueError(
+                "teleoperation.simulation.control_source must be 'vr' or 'leader'."
+            )
+        physics_hz = int(simulation_section.get("physics_hz", 240))
+        if physics_hz <= 0:
+            raise ValueError("teleoperation.simulation.physics_hz must be positive.")
+
+        simulation_cfg = SimulationConfig(
+            control_source=control_source,
+            physics_hz=physics_hz,
+            viewer=bool(simulation_section.get("viewer", True)),
+            passive_force_compensation=bool(
+                simulation_section.get("passive_force_compensation", True)
+            ),
+            urdf_path=simulation_section.get("urdf_path"),
+            arm_stiffness=float(simulation_section.get("arm_stiffness", 40.0)),
+            arm_damping=float(simulation_section.get("arm_damping", 5.0)),
+            gripper_stiffness=float(
+                simulation_section.get("gripper_stiffness", 20.0)
+            ),
+            gripper_damping=float(
+                simulation_section.get("gripper_damping", 3.0)
+            ),
+            force_limit=float(simulation_section.get("force_limit", 10.0)),
+        )
 
     leader_cfg: LeaderConfig | None = None
     leader_section = teleoperation_section.get("leader")
@@ -250,19 +301,34 @@ def load_config(path: str | Path) -> RobotConfig:
             use_degrees=bool(leader_section.get("use_degrees", True)),
         )
 
-    if teleoperation_mode == "leader":
+    effective_control_mode = teleoperation_mode
+    if teleoperation_mode == "simulation":
+        if simulation_cfg is None:
+            raise ValueError("Simulation configuration is missing.")
+        effective_control_mode = simulation_cfg.control_source
+        if len(arms) != 1:
+            raise ValueError(
+                "Simulation mode currently supports exactly one SO-101 arm."
+            )
+        simulated_arm_cfg = next(iter(arms.values()))
+        if not simulated_arm_cfg.use_degrees:
+            raise ValueError(
+                "Simulation mode currently requires arms.<name>.use_degrees: true."
+            )
+
+    if effective_control_mode == "leader":
         if leader_cfg is None:
             raise ValueError(
-                "teleoperation.mode is 'leader', but teleoperation.leader is missing."
+                "Leader control is active, but teleoperation.leader is missing."
             )
         if len(arms) != 1:
             raise ValueError(
-                "Leader mode currently supports one follower arm and one leader arm."
+                "Leader control currently supports one target arm and one leader arm."
             )
-        follower_cfg = next(iter(arms.values()))
-        if follower_cfg.use_degrees != leader_cfg.use_degrees:
+        target_cfg = next(iter(arms.values()))
+        if target_cfg.use_degrees != leader_cfg.use_degrees:
             raise ValueError(
-                "Leader and follower use_degrees values must match to prevent unsafe commands."
+                "Leader and target-arm use_degrees values must match."
             )
 
     robot_section = raw.get("robot", {})
@@ -274,6 +340,7 @@ def load_config(path: str | Path) -> RobotConfig:
         teleoperation=TeleoperationConfig(
             mode=teleoperation_mode,
             leader=leader_cfg,
+            simulation=simulation_cfg,
         ),
         dataset=dataset_cfg,
         use_rerun=robot_section.get("use_rerun", True),
@@ -282,9 +349,18 @@ def load_config(path: str | Path) -> RobotConfig:
 
 
 
+def get_control_mode(cfg: RobotConfig) -> str:
+    """Return the active command source: ``vr`` or ``leader``."""
+    if cfg.teleoperation.mode == "simulation":
+        if cfg.teleoperation.simulation is None:
+            raise ValueError("Simulation configuration is missing.")
+        return cfg.teleoperation.simulation.control_source
+    return cfg.teleoperation.mode
+
+
 def build_leader_teleoperator(cfg: RobotConfig):
-    """Build the configured leader arm, or return None in VR mode."""
-    if cfg.teleoperation.mode != "leader":
+    """Build the leader whenever the active command source is leader."""
+    if get_control_mode(cfg) != "leader":
         return None
 
     leader_cfg = cfg.teleoperation.leader
@@ -331,6 +407,14 @@ def load_robot(path: str | Path) -> tuple[Robot, RobotConfig]:
 
     #cfg are the values from the config.yaml file.
     cfg = load_config(path)
+
+    # Simulation mode keeps the same config.yaml but replaces the physical
+    # follower and physical cameras with a SAPIEN-backed SO-101.
+    if cfg.teleoperation.mode == "simulation":
+        from telerobot.simulation.so101_robot import SimulatedSO101
+
+        arm_name = next(iter(cfg.arms))
+        return SimulatedSO101(cfg=cfg, arm_name=arm_name), cfg
 
     # Build camera configs
     camera_configs = {

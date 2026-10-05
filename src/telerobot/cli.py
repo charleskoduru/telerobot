@@ -8,7 +8,7 @@ from queue import Empty, Queue
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data  # noqa: F401 (imported conditionally)
 
-from telerobot.config import build_leader_teleoperator, load_robot
+from telerobot.config import build_leader_teleoperator, get_control_mode, load_robot
 from telerobot.controller import build_controller
 try:
     from telerobot.dataset import (
@@ -117,6 +117,8 @@ def main():
 
     #This line add the config.yaml from config.pu using the load_robot funcation. 
     duo_robot, cfg = load_robot(config_path)
+    simulation_mode = cfg.teleoperation.mode == "simulation"
+    control_mode = get_control_mode(cfg)
     leader_device = build_leader_teleoperator(cfg)
 
 
@@ -130,12 +132,14 @@ def main():
             "brightness": cam.vr_brightness,
         }
         for name, cam in cfg.cameras.items()
+        if name in duo_robot.cameras
     },
     dataset_configured=(
         DATASET_AVAILABLE
         and cfg.dataset is not None
+        and not simulation_mode
     ),
-    teleoperation_mode=cfg.teleoperation.mode,
+    teleoperation_mode=control_mode,
     )
     teleop_device = setup_websocket_server()
 
@@ -143,17 +147,28 @@ def main():
 
     dataset = None
 
-    if DATASET_AVAILABLE:
+    if DATASET_AVAILABLE and not simulation_mode:
         dataset = setup_dataset(
             duo_robot,
             cfg,
             logger,
+        )
+    elif DATASET_AVAILABLE and simulation_mode and cfg.dataset is not None:
+        log_message(
+            logger,
+            "ℹ️ Simulation dataset recording is disabled during the first "
+            "SAPIEN bring-up. Simulated RGB/RGB-D cameras can be added next.",
         )
 
     # Connect to the robot
     duo_robot.connect()
     if leader_device is not None:
         leader_device.connect()
+
+    # Synchronize the simulated articulation to the current leader pose once
+    # at startup so it does not snap from URDF zero toward the leader.
+    if simulation_mode and leader_device is not None:
+        duo_robot.set_joint_state(leader_device.get_action())
 
     # Init rerun viewer (optional)
     if cfg.use_rerun:
@@ -180,7 +195,7 @@ def main():
 
     def publish_runtime_status():
         teleop_device.send_runtime_status(
-            control_mode=cfg.teleoperation.mode,
+            control_mode=control_mode,
             dataset_configured=dataset is not None,
             recording=recording,
             # A checkpoint is intentionally non-terminal. Keep finalized=False so
@@ -237,15 +252,18 @@ def main():
 
     publish_runtime_status()
 
-    log_message(logger, f"🎮 Teleoperation mode: {cfg.teleoperation.mode}")
-    if cfg.teleoperation.mode == "vr":
-        log_message(logger, "Starting teleop loop. Connect your VR headset to teleoperate the robot...")
+    if simulation_mode:
+        log_message(logger, f"🎮 Teleoperation mode: simulation ({control_mode} control)")
     else:
-        log_message(logger, "Starting teleop loop. Move the leader arm to command the follower...")
+        log_message(logger, f"🎮 Teleoperation mode: {control_mode}")
+    if control_mode == "vr":
+        log_message(logger, "Starting teleop loop. Connect your VR headset to teleoperate the target...")
+    else:
+        log_message(logger, "Starting teleop loop. Move the leader arm to command the target...")
     loop_count = 0
     last_action_str = "none"
     camera_read_warned = set()
-    leader_action_validated = cfg.teleoperation.mode != "leader"
+    leader_action_validated = control_mode != "leader"
 
     # Here the code then enters a loop to handle VR observations, control the robot, stream camera frames, and manage dataset recording based on user actions.
     
@@ -334,7 +352,7 @@ def main():
 
                 last_action_str = raw_action_str
 
-            if action_str == "recalibrate" and cfg.teleoperation.mode == "vr":
+            if action_str == "recalibrate" and control_mode == "vr":
                 controller.recalibrate()
                 teleop_device.send_transform_status("collecting")
 
@@ -358,7 +376,7 @@ def main():
                 end_active_episode(dataset, logger)
                 recording = False
                 publish_runtime_status()
-                if cfg.teleoperation.mode == "vr":
+                if control_mode == "vr":
                     controller.reset()
             elif action_str == 'save_dataset':
                 if recording:
@@ -406,7 +424,7 @@ def main():
             else:
                 result = None
                 try:
-                    if cfg.teleoperation.mode == "leader":
+                    if control_mode == "leader":
                         # The leader produces the same named follower-joint action
                         # dictionary that the VR IK path produces downstream.
                         action = leader_device.get_action()
@@ -479,6 +497,10 @@ def main():
                     camera_read_warned.discard(cam_name)
                     camera_server.update_camera_frame(cam_name, frame)
             t_camera = time.perf_counter()  # TODO: Remove timing debug
+
+            simulation_step = getattr(duo_robot, "step", None)
+            if callable(simulation_step):
+                simulation_step()
 
             precise_sleep(max(1.0 / cfg.fps - (time.perf_counter() - t0), 0.0))
 
@@ -553,6 +575,9 @@ def main():
         for camera in duo_robot.cameras.values():
             if isinstance(camera, PairedRealSenseCamera) and camera.is_connected:
                 camera.disconnect()
+
+        if simulation_mode and duo_robot.is_connected:
+            duo_robot.disconnect()
 
 if __name__ == "__main__":
     main()

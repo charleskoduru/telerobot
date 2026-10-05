@@ -51,7 +51,17 @@ cameras:
     vr_brightness: 0
 
 teleoperation:
-  mode: leader # vr |leader 
+  # vr | leader | simulation
+  mode: simulation
+
+  # Used only when mode: simulation. The same SAPIEN robot can be driven by
+  # either your SO-101 leader arm or the existing Quest/VR IK pipeline.
+  simulation:
+    control_source: leader  # leader | vr
+    physics_hz: 240
+    viewer: true
+    passive_force_compensation: true
+
   leader:
     type: so101_leader
     port: /dev/ttyACM1

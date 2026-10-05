@@ -146,6 +146,9 @@ class SingleController(Controller):
             measured_obs = self.robot.get_observation()
             action = self.filter_joint_action(measured_obs, action)
             self.robot.send_action(action)
+            simulation_step = getattr(self.robot, "step", None)
+            if callable(simulation_step):
+                simulation_step()
             time.sleep(1.0 / fps)
 
         _reset_processor_state(self.processor)
@@ -316,6 +319,10 @@ class BiController(Controller):
 
 def build_controller(robot: Robot, cfg: RobotConfig) -> Controller:
     if isinstance(robot, SOFollower):
+        return SingleController(robot, cfg)
+
+    from telerobot.simulation.so101_robot import SimulatedSO101
+    if isinstance(robot, SimulatedSO101):
         return SingleController(robot, cfg)
 
     if isinstance(robot, BiSOFollower):
