@@ -202,8 +202,12 @@ class SimulatedSO101:
             alpha = float(np.clip(float(value) / 100.0, 0.0, 1.0))
             return lower + alpha * (upper - lower)
 
-        # Simulation mode currently requires use_degrees: true.
-        target = math.radians(float(value))
+        # Simulation mode currently requires use_degrees: true. Apply a
+        # configurable zero-offset before converting the logical leader value
+        # into the URDF joint angle. Example: wrist_roll=-90 rotates J5 90 deg
+        # clockwise in the current SO-101 simulation axis convention.
+        offset_deg = float(self.sim_cfg.joint_offsets_deg.get(name, 0.0))
+        target = math.radians(float(value) + offset_deg)
         return float(np.clip(target, lower, upper))
 
     def _urdf_to_logical(self, name: str, value_rad: float) -> float:
@@ -213,7 +217,10 @@ class SimulatedSO101:
                 return 0.0
             alpha = (float(value_rad) - lower) / (upper - lower)
             return float(np.clip(alpha * 100.0, 0.0, 100.0))
-        return math.degrees(float(value_rad))
+        # Undo the simulation-only zero-offset so observations remain in the
+        # same logical joint coordinates as the leader arm.
+        offset_deg = float(self.sim_cfg.joint_offsets_deg.get(name, 0.0))
+        return math.degrees(float(value_rad)) - offset_deg
 
     def connect(self, calibrate: bool = True) -> None:
         del calibrate  # Compatibility with the physical LeRobot robot API.

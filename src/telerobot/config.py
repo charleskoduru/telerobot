@@ -83,7 +83,7 @@ class SimulationConfig:
     gripper_stiffness: float = 20.0
     gripper_damping: float = 3.0
     force_limit: float = 10.0
-
+    joint_offsets_deg: dict[str, float] = field(default_factory=dict)
 
 @dataclass
 class TeleoperationConfig:
@@ -285,6 +285,12 @@ def load_config(path: str | Path) -> RobotConfig:
                 simulation_section.get("gripper_damping", 3.0)
             ),
             force_limit=float(simulation_section.get("force_limit", 10.0)),
+            joint_offsets_deg={ 
+                str(name): float(value)
+                for name, value in (
+                    simulation_section.get("joint_offsets_deg", {}) or {}
+                ).items()
+            },
         )
 
     leader_cfg: LeaderConfig | None = None

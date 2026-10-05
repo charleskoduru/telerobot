@@ -16,7 +16,7 @@ cameras:
     fps: 30
     use_depth: true
     depth_width: 640
-    depth_height: 480
+    depth_height: 480 
     align_depth: true
     vr_gamma: 1.0      # Lower values brighten shadows.
     vr_gain: 1.0     # Multiplies the full image brightness.
@@ -25,9 +25,9 @@ cameras:
       attach_to: gripper_link
       # Local coordinates in gripper_link. SAPIEN cameras look along +X.
       # These are easy-to-tune placeholders until we measure your real D405 mount.
-      position: [0.025, 0.0, -0.025]
+      position: [0.00, 0.07, 0.00]
       look_at: [0.025, 0.0, -0.18]
-      up: [1.0, 0.0, 0.0]
+      up: [0.0, -1.0, 0.0]
       near: 0.04
       far: 2.0
 
@@ -87,6 +87,10 @@ teleoperation:
     physics_hz: 240
     viewer: true
     passive_force_compensation: true
+
+    # Simulation zero-offsets in degrees. J5 is wrist_roll.
+    joint_offsets_deg:
+      wrist_roll: -90.0
 
   leader:
     type: so101_leader

@@ -12,29 +12,7 @@ index d735d7a..6ddedf9 100644
 +
    leader:
      type: so101_leader
-diff --git a/src/telerobot/config.py b/src/telerobot/config.py
-index 2ed710b..0a3896d 100644
---- a/src/telerobot/config.py
-+++ b/src/telerobot/config.py
-@@ -14,6 +14,7 @@ class SimulationConfig:
-     gripper_stiffness: float = 20.0
-     gripper_damping: float = 3.0
-     force_limit: float = 10.0
-+    joint_offsets_deg: dict[str, float] = field(default_factory=dict)
- 
- 
- @dataclass
-@@ -46,6 +47,10 @@ def load_config(path: str | Path):
-                 simulation_section.get("gripper_damping", 3.0)
-             ),
-             force_limit=float(simulation_section.get("force_limit", 10.0)),
-+            joint_offsets_deg={
-+                str(name): float(value)
-+                for name, value in (simulation_section.get("joint_offsets_deg", {}) or {}).items()
-+            },
-         )
- 
-     leader_cfg = None
+
 diff --git a/src/telerobot/simulation/so101_robot.py b/src/telerobot/simulation/so101_robot.py
 index cc768b4..6b387dc 100644
 --- a/src/telerobot/simulation/so101_robot.py
