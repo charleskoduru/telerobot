@@ -3,8 +3,9 @@
 This initial backend deliberately focuses on articulation bring-up and teleoperation.
 It exposes the same six ``*.pos`` action/observation keys as the real SO follower,
 so both the existing SO-101 leader path and the existing VR IK path can command it.
-Physical RealSense cameras are not opened in simulation mode; simulated cameras are
-the next layer to add once joint mapping and motion are validated.
+Physical RealSense devices are not opened in simulation mode. Instead, the camera
+names from config.yaml are backed by SAPIEN cameras so the existing WebXR preview
+continues to use gripperCam, isoCam, and baseCam.
 """
 
 from __future__ import annotations
@@ -17,6 +18,12 @@ from typing import Any
 import numpy as np
 
 from telerobot import PACKAGE_DIR
+from telerobot.simulation.camera import (
+    CAMERA_MODEL_PROFILES,
+    SimulatedCamera,
+    intrinsics_from_fov,
+    look_at_pose,
+)
 
 
 ARM_JOINTS = (
@@ -45,8 +52,12 @@ class SimulatedSO101:
         # existing VR processor/workspace guard reuse the exact SO-101 joint names.
         self.bus = SimpleNamespace(motors={name: None for name in JOINT_NAMES})
 
-        # Physical cameras are intentionally not opened in simulation mode.
-        self.cameras: dict[str, Any] = {}
+        # Populate names immediately because the WebXR server is constructed
+        # before robot.connect(). The SAPIEN camera components are bound later.
+        self.cameras: dict[str, SimulatedCamera] = {
+            name: SimulatedCamera(name, cfg.cameras[name])
+            for name in self.arm_cfg.cameras
+        }
 
         self.scene = None
         self.articulation = None
@@ -80,6 +91,103 @@ class SimulatedSO101:
             / "SO101"
             / "so101_new_calib.urdf"
         ).resolve()
+
+
+    def _build_simulated_cameras(self, sapien_module) -> None:
+        if not self.cameras:
+            return
+
+        links = {link.name: link for link in self.articulation.get_links()}
+
+        for name, wrapper in self.cameras.items():
+            camera_cfg = self.cfg.cameras[name]
+            model = (camera_cfg.model or "").lower()
+            if model not in CAMERA_MODEL_PROFILES:
+                raise ValueError(
+                    f"Simulation camera '{name}' needs model: d405, d415, or d435i; "
+                    f"got {camera_cfg.model!r}."
+                )
+
+            if camera_cfg.use_depth and (
+                camera_cfg.depth_width != camera_cfg.width
+                or camera_cfg.depth_height != camera_cfg.height
+            ):
+                raise ValueError(
+                    f"Simulation camera '{name}' currently requires depth_width/"
+                    "depth_height to match RGB width/height for aligned depth."
+                )
+
+            profile = CAMERA_MODEL_PROFILES[model]
+            sim = camera_cfg.simulation or {}
+            attach_to = str(sim.get("attach_to", "world"))
+            position = sim.get("position", [0.0, 0.0, 0.0])
+            look_at = sim.get("look_at", [1.0, 0.0, 0.0])
+            up = sim.get("up", [0.0, 0.0, 1.0])
+            near = float(sim.get("near", profile["default_near_m"]))
+            far = float(sim.get("far", profile["default_far_m"]))
+            if near <= 0 or far <= near:
+                raise ValueError(
+                    f"Simulation camera '{name}' needs 0 < near < far; "
+                    f"got near={near}, far={far}."
+                )
+
+            pose = look_at_pose(sapien_module, position, look_at, up)
+            fovy = math.radians(profile["color_vfov_deg"])
+
+            if attach_to == "world":
+                camera = self.scene.add_camera(
+                    name=name,
+                    width=camera_cfg.width,
+                    height=camera_cfg.height,
+                    fovy=fovy,
+                    near=near,
+                    far=far,
+                )
+                camera.entity.set_pose(pose)
+            else:
+                link = links.get(attach_to)
+                if link is None:
+                    raise ValueError(
+                        f"Simulation camera '{name}' attach_to='{attach_to}' does not "
+                        f"match any URDF link. Available links: {sorted(links)}"
+                    )
+                camera = self.scene.add_mounted_camera(
+                    name=name,
+                    mount=link.entity,
+                    pose=pose,
+                    width=camera_cfg.width,
+                    height=camera_cfg.height,
+                    fovy=fovy,
+                    near=near,
+                    far=far,
+                )
+
+            fx, fy, cx, cy = intrinsics_from_fov(
+                camera_cfg.width,
+                camera_cfg.height,
+                profile["color_hfov_deg"],
+                profile["color_vfov_deg"],
+            )
+            camera.set_perspective_parameters(near, far, fx, fy, cx, cy, 0.0)
+            wrapper.bind(
+                scene=self.scene,
+                camera_component=camera,
+                model=model,
+                near_m=near,
+                far_m=far,
+                fx=fx,
+                fy=fy,
+                cx=cx,
+                cy=cy,
+                attach_to=attach_to,
+            )
+
+            depth_label = "RGB-D" if camera_cfg.use_depth else "RGB"
+            print(
+                f"   📷 {name}: {model.upper()} {depth_label} "
+                f"{camera_cfg.width}x{camera_cfg.height}@{camera_cfg.fps} "
+                f"attach_to={attach_to}"
+            )
 
     @staticmethod
     def _limits(joint) -> tuple[float, float]:
@@ -157,6 +265,7 @@ class SimulatedSO101:
         self.scene = scene
         self.articulation = articulation
         self._joints = joints
+        self._build_simulated_cameras(sapien)
 
         # Keep drive targets on the URDF's initial qpos until the first leader/VR
         # command arrives. This avoids an uncontrolled articulation at startup.
@@ -207,12 +316,18 @@ class SimulatedSO101:
             raise RuntimeError("Simulation is not connected.")
 
         qpos = np.asarray(self.articulation.get_qpos(), dtype=np.float32)
-        observation: dict[str, float] = {}
+        observation: dict[str, Any] = {}
         for joint, value in zip(self.articulation.get_active_joints(), qpos):
             if joint.name in self._joints:
                 observation[f"{joint.name}.pos"] = self._urdf_to_logical(
                     joint.name, float(value)
                 )
+
+        # Match the physical robot's observation schema: camera keys contain RGB
+        # arrays. The D405's aligned depth remains paired with that RGB inside the
+        # SimulatedCamera and is available via packet_for_rgb/read_depth_latest.
+        for name, camera in self.cameras.items():
+            observation[name] = camera.read_latest()
         return observation
 
     def send_action(self, action: dict[str, float]) -> dict[str, float]:
@@ -260,6 +375,9 @@ class SimulatedSO101:
             close = getattr(self.viewer, "close", None)
             if callable(close):
                 close()
+
+        for camera in self.cameras.values():
+            camera.disconnect()
 
         self.viewer = None
         self.articulation = None

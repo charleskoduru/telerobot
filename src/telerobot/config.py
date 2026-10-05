@@ -27,6 +27,8 @@ class CameraConfig:
     height: int = 480
     fps: int = 30
     fourcc: str | None = None
+    model: str | None = None
+    simulation: dict[str, Any] = field(default_factory=dict)
     vr_gamma: float = 1.0  # Less than 1 brightens the headset feed only.
     vr_gain: float = 1.0  # Multiplies pixel values before gamma correction.
     vr_brightness: int = 0  # Adds a fixed offset before gamma correction.
@@ -193,6 +195,8 @@ def load_config(path: str | Path) -> RobotConfig:
             height=cam.get("height", 480),
             fps=cam.get("fps", 30),
             fourcc=fourcc,
+            model=(str(cam["model"]).lower() if cam.get("model") is not None else None),
+            simulation=dict(cam.get("simulation", {}) or {}),
             vr_gamma=vr_gamma,
             vr_gain=vr_gain,
             vr_brightness=vr_brightness,

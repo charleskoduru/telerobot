@@ -156,8 +156,9 @@ def main():
     elif DATASET_AVAILABLE and simulation_mode and cfg.dataset is not None:
         log_message(
             logger,
-            "ℹ️ Simulation dataset recording is disabled during the first "
-            "SAPIEN bring-up. Simulated RGB/RGB-D cameras can be added next.",
+            "ℹ️ Simulation camera streaming is enabled, but simulation dataset "
+            "recording remains disabled until the simulated RGB-D packet is wired "
+            "into the existing depth recorder.",
         )
 
     # Connect to the robot

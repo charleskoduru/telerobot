@@ -9,6 +9,7 @@ robot:
 cameras:
   gripperCam:
     type: realsense
+    model: d405
     serial_number: "352122272219"
     width: 640
     height: 480
@@ -20,10 +21,20 @@ cameras:
     vr_gamma: 1.0      # Lower values brighten shadows.
     vr_gain: 1.0     # Multiplies the full image brightness.
     vr_brightness: 20    # Adds brightness after gain (0-100).
+    simulation:
+      attach_to: gripper_link
+      # Local coordinates in gripper_link. SAPIEN cameras look along +X.
+      # These are easy-to-tune placeholders until we measure your real D405 mount.
+      position: [0.025, 0.0, -0.025]
+      look_at: [0.025, 0.0, -0.18]
+      up: [1.0, 0.0, 0.0]
+      near: 0.04
+      far: 2.0
 
 
   isoCam:
     type: realsense
+    model: d415
     serial_number: "027122062216"
     width: 640
     height: 480
@@ -35,9 +46,17 @@ cameras:
     vr_gamma: 1.0
     vr_gain: 1.0
     vr_brightness: 15
+    simulation:
+      attach_to: world
+      position: [0.525,0.02,0.35]
+      look_at: [0.20, 0.0, 0.05]
+      up: [0.0, 0.0, 1.0]
+      near: 0.03
+      far: 3.0
 
   baseCam:
     type: realsense
+    model: d435i
     serial_number: "926522071325"
     width: 640
     height: 480
@@ -49,6 +68,13 @@ cameras:
     vr_gamma: 1.0
     vr_gain: 1.0
     vr_brightness: 0
+    simulation:
+      attach_to: shoulder_link
+      position: [0.00, 0.00, 0.04 ]
+      look_at: [0.20, 0.0, -0.05]
+      up: [0.0, 0.0, 1.0]
+      near: 0.03
+      far: 3.0
 
 teleoperation:
   # vr | leader | simulation
@@ -94,7 +120,7 @@ arms:
 
 #Uncomment to enable episode recording to a LeRobot dataset
 dataset:
-    repo_id: "charlieK123/depth_dataSet"
+    repo_id: "charlieK123/depth_dataSet1"
     single_task: "picking up forceps and sorting the forceps"
     push_to_hub: true  # set to true to push the dataset to Hugging Face Hub on save
     #root: "./datasets"  # optional: override dataset storage path
