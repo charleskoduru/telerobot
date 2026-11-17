@@ -83,6 +83,14 @@ class WebXRServer:
         self.teleoperation_mode = teleoperation_mode
         self.app = web.Application()
         self.pcs: set = set()
+        self._loop = None
+        self._thread = None
+        self._runner = None
+        self._run_task = None
+        self._ready_event = threading.Event()
+        self._stop_requested = threading.Event()
+        self._startup_error = None
+        self._closing = False
         self.camera_tracks: Dict[str, CameraStreamTrack] = {}
         # These adjustments are applied to a copy used by WebRTC. Robot
         # observations and dataset frames keep their original pixels.
@@ -243,6 +251,7 @@ class WebXRServer:
         self.app.middlewares.append(logging_middleware)
         
         runner = web.AppRunner(self.app)
+        self._runner = runner
         await runner.setup()
         
         # Create site with or without SSL
@@ -265,19 +274,73 @@ class WebXRServer:
         except:
             self.logger.info(f"Could not determine local IP")
     
+    async def _cleanup(self):
+        await asyncio.gather(*(pc.close() for pc in tuple(self.pcs)), return_exceptions=True)
+        self.pcs.clear()
+        for track in self.camera_tracks.values():
+            track.stop()
+        if self._runner is not None:
+            await self._runner.cleanup()
+            self._runner = None
+
     def run_in_thread(self):
-        """Run the server in a background thread."""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
+        """Run and clean up HTTP/WebRTC resources on their owning event loop."""
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+
         async def run():
-            await self.start_server()
             try:
-                await asyncio.Future()  # Run forever
+                if self._stop_requested.is_set():
+                    return
+                await self.start_server()
+                self._ready_event.set()
+                if not self._stop_requested.is_set():
+                    await asyncio.Future()
             except asyncio.CancelledError:
                 pass
-        
-        loop.run_until_complete(run())
+            except Exception as exc:
+                self._startup_error = exc
+            finally:
+                self._closing = True
+                try:
+                    await self._cleanup()
+                finally:
+                    self._ready_event.set()
+
+        self._run_task = self._loop.create_task(run())
+        try:
+            self._loop.run_until_complete(self._run_task)
+        finally:
+            self._loop.close()
+
+    def connect(self):
+        self._ready_event.clear()
+        self._stop_requested.clear()
+        self._startup_error = None
+        self._closing = False
+        self._thread = threading.Thread(target=self.run_in_thread, daemon=True)
+        self._thread.start()
+        if not self._ready_event.wait(timeout=10.0):
+            self.stop()
+            raise TimeoutError("WebXR server did not start within 10 seconds.")
+        if self._startup_error is not None:
+            self.stop()
+            raise RuntimeError("WebXR server startup failed.") from self._startup_error
+
+    def stop(self, timeout: float = 5.0):
+        self._stop_requested.set()
+        if self._loop and self._loop.is_running() and self._run_task:
+            try:
+                def cancel_run():
+                    if not self._closing:
+                        self._run_task.cancel()
+                self._loop.call_soon_threadsafe(cancel_run)
+            except RuntimeError:
+                pass  # Already closed.
+        if self._thread and self._thread is not threading.current_thread():
+            self._thread.join(timeout=timeout)
+            if self._thread.is_alive():
+                raise RuntimeError("WebXR shutdown did not finish in time.")
 
 
 def create_ssl_context(cert_file: str, key_file: str):
@@ -347,8 +410,11 @@ def setup_webxr_server(
         camera_image_settings=camera_image_settings,
     )
 
-    server_thread = threading.Thread(target=camera_server.run_in_thread, daemon=True)
-    server_thread.start()
+    try:
+        camera_server.connect()
+    except BaseException:
+        camera_server.stop()
+        raise
 
     if use_https:
         log_message(logger, "🔒 HTTPS WebXR server started on https://0.0.0.0:8765")

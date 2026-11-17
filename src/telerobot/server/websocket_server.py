@@ -27,6 +27,8 @@ class WebSocketServer:
         self._ready_event = threading.Event()  # to signal readiness
         self._clients = set()
         self._runtime_status = {}
+        self._startup_error = None
+        self._stop_requested = threading.Event()
         
         # SSL configuration
         self.use_ssl = use_ssl
@@ -116,6 +118,8 @@ class WebSocketServer:
             ssl=self.ssl_context
         )
         self._ready_event.set()  # mark as ready once server is up
+        if self._stop_requested.is_set():
+            self._server.close()
         await self._server.wait_closed()
 
     def _run_server_thread(self):
@@ -123,33 +127,58 @@ class WebSocketServer:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
-            self._loop.run_until_complete(self.start_websocket_server())
+            if not self._stop_requested.is_set():
+                self._loop.run_until_complete(self.start_websocket_server())
+        except Exception as exc:
+            self._startup_error = exc
         finally:
+            self.connected = False
+            self._ready_event.set()  # Wake connect() on bind/SSL failures too.
             self._loop.close()
 
     def connect(self):
         """Starts the websocket server in a background thread."""
         print("🚀 Starting websocket server thread...")
+        self._ready_event.clear()
+        self._stop_requested.clear()
+        self._startup_error = None
         self._thread = threading.Thread(target=self._run_server_thread, daemon=True)
         self._thread.start()
         # Wait until the server is ready
-        self._ready_event.wait()
+        if not self._ready_event.wait(timeout=10.0):
+            self.stop()
+            raise TimeoutError("WebSocket server did not start within 10 seconds.")
+        if self._startup_error is not None:
+            self.stop()
+            raise RuntimeError("WebSocket server startup failed.") from self._startup_error
         self.connected = True
         protocol = "wss" if self.ssl_context else "ws"
         print(f"✅ WebSocket server is ready and running in background ({protocol}://)")
 
-    async def disconnect(self):
+    def stop(self, timeout: float = 5.0):
+        """Close clients/listener on their owning loop, then join its thread."""
+        self._stop_requested.set()
         if self._server and self._loop and self._loop.is_running():
-            print("🛑 Shutting down WebSocket server...")
-            # Schedule shutdown on the server loop
-            def _shutdown():
-                self._server.close()
-            self._loop.call_soon_threadsafe(_shutdown)
+            try:
+                self._loop.call_soon_threadsafe(self._server.close)
+            except RuntimeError:
+                pass  # The loop already finished while shutdown was requested.
+        if self._thread and self._thread is not threading.current_thread():
+            self._thread.join(timeout=timeout)
+            if self._thread.is_alive():
+                raise RuntimeError("WebSocket shutdown did not finish in time.")
         self.connected = False
+
+    async def disconnect(self):
+        await asyncio.to_thread(self.stop)
 
 
 def setup_websocket_server() -> WebSocketServer:
     """Create and connect the WebSocket teleop server."""
     teleop_device = WebSocketServer()
-    teleop_device.connect()
+    try:
+        teleop_device.connect()
+    except BaseException:
+        teleop_device.stop()
+        raise
     return teleop_device

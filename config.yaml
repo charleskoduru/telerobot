@@ -27,7 +27,7 @@ cameras:
       # These are easy-to-tune placeholders until we measure your real D405 mount.
       position: [0.00, 0.07, 0.00]
       look_at: [0.025, 0.0, -0.18]
-      up: [0.0, -1.0, 0.0]
+      up: [0.0, 1.0, 0.0]
       near: 0.04
       far: 2.0
 
@@ -124,7 +124,7 @@ arms:
 
 #Uncomment to enable episode recording to a LeRobot dataset
 dataset:
-    repo_id: "charlieK123/depth_dataSet1"
+    repo_id: "charlieK123/simDataTest"
     single_task: "picking up forceps and sorting the forceps"
     push_to_hub: true  # set to true to push the dataset to Hugging Face Hub on save
     #root: "./datasets"  # optional: override dataset storage path

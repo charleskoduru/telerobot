@@ -40,6 +40,8 @@ JOINT_NAMES = (*ARM_JOINTS, GRIPPER_JOINT)
 class SimulatedSO101:
     """Single SO-101 articulation controlled through Telerobot joint actions."""
 
+    name = "so101_simulation"
+
     def __init__(self, cfg: Any, arm_name: str):
         self.cfg = cfg
         self.arm_name = arm_name
@@ -52,8 +54,8 @@ class SimulatedSO101:
         # existing VR processor/workspace guard reuse the exact SO-101 joint names.
         self.bus = SimpleNamespace(motors={name: None for name in JOINT_NAMES})
 
-        # Populate names immediately because the WebXR server is constructed
-        # before robot.connect(). The SAPIEN camera components are bound later.
+        # Expose the complete observation schema before connecting; SAPIEN
+        # camera components are bound when the robot connects.
         self.cameras: dict[str, SimulatedCamera] = {
             name: SimulatedCamera(name, cfg.cameras[name])
             for name in self.arm_cfg.cameras
@@ -74,8 +76,14 @@ class SimulatedSO101:
         return {f"{name}.pos": float for name in JOINT_NAMES}
 
     @property
-    def observation_features(self) -> dict[str, type]:
-        return self.action_features
+    def observation_features(self) -> dict[str, type | tuple[int, int, int]]:
+        return {
+            **self.action_features,
+            **{
+                name: (camera.height, camera.width, 3)
+                for name, camera in self.cameras.items()
+            },
+        }
 
     def _urdf_path(self) -> Path:
         configured = self.sim_cfg.urdf_path
@@ -281,10 +289,18 @@ class SimulatedSO101:
             joint.set_drive_target(float(value))
 
         if self.sim_cfg.viewer:
-            viewer = scene.create_viewer()
-            viewer.set_camera_xyz(x=-0.55, y=0.0, z=0.35)
-            viewer.set_camera_rpy(r=0.0, p=-0.55, y=0.0)
-            self.viewer = viewer
+            try:
+                self.viewer = scene.create_viewer()
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    "SAPIEN could not open the simulation viewer. Check Docker "
+                    "DISPLAY/X11 access and NVIDIA Vulkan support, or set "
+                    "teleoperation.simulation.viewer: false to stream cameras "
+                    "without a desktop window. Offscreen cameras still require "
+                    "a working Vulkan renderer."
+                ) from exc
+            self.viewer.set_camera_xyz(x=-0.55, y=0.0, z=0.35)
+            self.viewer.set_camera_rpy(r=0.0, p=-0.55, y=0.0)
 
         self._connected = True
 
@@ -375,19 +391,27 @@ class SimulatedSO101:
             self.viewer.render()
 
     def disconnect(self) -> None:
-        if not self._connected:
-            return
-
+        # A failed viewer/camera setup can leave resources while _connected is
+        # still false. Disconnect is deliberately safe for that partial state.
+        error = None
         if self.viewer is not None:
             close = getattr(self.viewer, "close", None)
             if callable(close):
-                close()
+                try:
+                    close()
+                except Exception as exc:
+                    error = exc
 
         for camera in self.cameras.values():
-            camera.disconnect()
+            try:
+                camera.disconnect()
+            except Exception as exc:
+                error = error or exc
 
         self.viewer = None
         self.articulation = None
         self.scene = None
         self._joints = {}
         self._connected = False
+        if error is not None:
+            raise error

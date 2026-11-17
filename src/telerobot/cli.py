@@ -122,66 +122,9 @@ def main():
     leader_device = build_leader_teleoperator(cfg)
 
 
-    camera_server = setup_webxr_server(
-    duo_robot,
-    logger,
-    camera_image_settings={
-        name: {
-            "gamma": cam.vr_gamma,
-            "gain": cam.vr_gain,
-            "brightness": cam.vr_brightness,
-        }
-        for name, cam in cfg.cameras.items()
-        if name in duo_robot.cameras
-    },
-    dataset_configured=(
-        DATASET_AVAILABLE
-        and cfg.dataset is not None
-        and not simulation_mode
-    ),
-    teleoperation_mode=control_mode,
-    )
-    teleop_device = setup_websocket_server()
-
-    controller = build_controller(duo_robot, cfg)
-
+    camera_server = None
+    teleop_device = None
     dataset = None
-
-    if DATASET_AVAILABLE and not simulation_mode:
-        dataset = setup_dataset(
-            duo_robot,
-            cfg,
-            logger,
-        )
-    elif DATASET_AVAILABLE and simulation_mode and cfg.dataset is not None:
-        log_message(
-            logger,
-            "ℹ️ Simulation camera streaming is enabled, but simulation dataset "
-            "recording remains disabled until the simulated RGB-D packet is wired "
-            "into the existing depth recorder.",
-        )
-
-    # Connect to the robot
-    duo_robot.connect()
-    if leader_device is not None:
-        leader_device.connect()
-
-    # Synchronize the simulated articulation to the current leader pose once
-    # at startup so it does not snap from URDF zero toward the leader.
-    if simulation_mode and leader_device is not None:
-        duo_robot.set_joint_state(leader_device.get_action())
-
-    # Init rerun viewer (optional)
-    if cfg.use_rerun:
-        init_rerun(session_name="vr_lerobot_teleop")
-
-    if not duo_robot.is_connected or not teleop_device.is_connected:
-        raise ValueError("Robot or web control server is not connected!")
-    if leader_device is not None and not leader_device.is_connected:
-        raise ValueError("Leader arm is not connected!")
-
-    controller.capture_initial_observations()
-
     recording = False
     checkpointing = False
     checkpoint_error = None
@@ -194,81 +137,118 @@ def main():
     last_camera_timeout_warning = 0.0
     push_to_hub = cfg.dataset.push_to_hub if cfg.dataset else False
 
-    def publish_runtime_status():
-        teleop_device.send_runtime_status(
-            control_mode=control_mode,
-            dataset_configured=dataset is not None,
-            recording=recording,
-            # A checkpoint is intentionally non-terminal. Keep finalized=False so
-            # existing clients do not lock the recording controls after a save.
-            finalized=False,
-            checkpointing=checkpointing,
-            checkpoint_error=checkpoint_error,
-            deleting_episode=deleting_episode,
-            delete_episode_error=delete_episode_error,
-            episode_count=(dataset.num_episodes if dataset is not None else 0),
-        )
-
-    def start_dataset_checkpoint(active_dataset):
-        """Finalize/upload in a worker so robot control and camera streaming never stop."""
-        def worker():
-            try:
-                resumed_dataset, upload_ok = checkpoint_dataset(
-                    active_dataset,
-                    cfg,
-                    push_to_hub,
-                    logger,
-                )
-                checkpoint_results.put(("ok", (resumed_dataset, upload_ok)))
-            except Exception as exc:
-                checkpoint_results.put(("error", exc))
-
-        return threading.Thread(
-            target=worker,
-            name="telerobot-dataset-checkpoint",
-            daemon=False,
-        )
-
-    def start_delete_previous_episode(active_dataset):
-        """Delete the latest saved episode without blocking cameras or robot control."""
-        def worker():
-            try:
-                resumed_dataset, deleted_index, upload_ok = delete_previous_episode_checkpoint(
-                    active_dataset,
-                    cfg,
-                    push_to_hub,
-                    logger,
-                )
-                delete_episode_results.put(
-                    ("ok", (resumed_dataset, deleted_index, upload_ok))
-                )
-            except Exception as exc:
-                delete_episode_results.put(("error", exc))
-
-        return threading.Thread(
-            target=worker,
-            name="telerobot-delete-previous-episode",
-            daemon=False,
-        )
-
-    publish_runtime_status()
-
-    if simulation_mode:
-        log_message(logger, f"🎮 Teleoperation mode: simulation ({control_mode} control)")
-    else:
-        log_message(logger, f"🎮 Teleoperation mode: {control_mode}")
-    if control_mode == "vr":
-        log_message(logger, "Starting teleop loop. Connect your VR headset to teleoperate the target...")
-    else:
-        log_message(logger, "Starting teleop loop. Move the leader arm to command the target...")
-    loop_count = 0
-    last_action_str = "none"
-    camera_read_warned = set()
-    leader_action_validated = control_mode != "leader"
-
-    # Here the code then enters a loop to handle VR observations, control the robot, stream camera frames, and manage dataset recording based on user actions.
-    
     try:
+        # Finish blocking calibration before opening a window or starting servers.
+        if leader_device is not None:
+            leader_device.connect()
+        duo_robot.connect()
+
+        if simulation_mode and leader_device is not None:
+            duo_robot.set_joint_state(leader_device.get_action())
+
+        controller = build_controller(duo_robot, cfg)
+        if DATASET_AVAILABLE:
+            dataset = setup_dataset(duo_robot, cfg, logger)
+
+        camera_server = setup_webxr_server(
+            duo_robot,
+            logger,
+            camera_image_settings={
+                name: {
+                    "gamma": cam.vr_gamma,
+                    "gain": cam.vr_gain,
+                    "brightness": cam.vr_brightness,
+                }
+                for name, cam in cfg.cameras.items()
+                if name in duo_robot.cameras
+            },
+            dataset_configured=dataset is not None,
+            teleoperation_mode=control_mode,
+        )
+        teleop_device = setup_websocket_server()
+
+        if cfg.use_rerun:
+            init_rerun(session_name="vr_lerobot_teleop")
+        if not duo_robot.is_connected or not teleop_device.is_connected:
+            raise ValueError("Robot or web control server is not connected!")
+        if leader_device is not None and not leader_device.is_connected:
+            raise ValueError("Leader arm is not connected!")
+        controller.capture_initial_observations()
+
+        def publish_runtime_status():
+            teleop_device.send_runtime_status(
+                control_mode=control_mode,
+                dataset_configured=dataset is not None,
+                recording=recording,
+                # A checkpoint is intentionally non-terminal. Keep finalized=False so
+                # existing clients do not lock the recording controls after a save.
+                finalized=False,
+                checkpointing=checkpointing,
+                checkpoint_error=checkpoint_error,
+                deleting_episode=deleting_episode,
+                delete_episode_error=delete_episode_error,
+                episode_count=(dataset.num_episodes if dataset is not None else 0),
+            )
+
+        def start_dataset_checkpoint(active_dataset):
+            """Finalize/upload in a worker so robot control and camera streaming never stop."""
+            def worker():
+                try:
+                    resumed_dataset, upload_ok = checkpoint_dataset(
+                        active_dataset,
+                        cfg,
+                        push_to_hub,
+                        logger,
+                    )
+                    checkpoint_results.put(("ok", (resumed_dataset, upload_ok)))
+                except Exception as exc:
+                    checkpoint_results.put(("error", exc))
+
+            return threading.Thread(
+                target=worker,
+                name="telerobot-dataset-checkpoint",
+                daemon=False,
+            )
+
+        def start_delete_previous_episode(active_dataset):
+            """Delete the latest saved episode without blocking cameras or robot control."""
+            def worker():
+                try:
+                    resumed_dataset, deleted_index, upload_ok = delete_previous_episode_checkpoint(
+                        active_dataset,
+                        cfg,
+                        push_to_hub,
+                        logger,
+                    )
+                    delete_episode_results.put(
+                        ("ok", (resumed_dataset, deleted_index, upload_ok))
+                    )
+                except Exception as exc:
+                    delete_episode_results.put(("error", exc))
+
+            return threading.Thread(
+                target=worker,
+                name="telerobot-delete-previous-episode",
+                daemon=False,
+            )
+
+        publish_runtime_status()
+
+        if simulation_mode:
+            log_message(logger, f"🎮 Teleoperation mode: simulation ({control_mode} control)")
+        else:
+            log_message(logger, f"🎮 Teleoperation mode: {control_mode}")
+        if control_mode == "vr":
+            log_message(logger, "Starting teleop loop. Connect your VR headset to teleoperate the target...")
+        else:
+            log_message(logger, "Starting teleop loop. Move the leader arm to command the target...")
+        loop_count = 0
+        last_action_str = "none"
+        camera_read_warned = set()
+        leader_action_validated = control_mode != "leader"
+
+        # Here the code then enters a loop to handle VR observations, control the robot, stream camera frames, and manage dataset recording based on user actions.
+
         while True:
             t0 = time.perf_counter()
             t_control = t_rerun = t_dataset = None  # TODO: Remove timing debug
@@ -519,9 +499,6 @@ def main():
 
     finally:
 
-        if leader_device is not None and leader_device.is_connected:
-            leader_device.disconnect()
-
         # Do not abandon a checkpoint thread halfway through a parquet finalize/upload.
         # Waiting is safe during shutdown because the realtime control loop is already ending.
         if checkpoint_thread is not None and checkpoint_thread.is_alive():
@@ -570,15 +547,29 @@ def main():
 
         # Drain depth workers even if a disk failure prevented episode finalization.
         depth = getattr(dataset, "_telerobot_depth", None)
-        if depth is not None:
-            depth.close_worker()
-        from telerobot.cameras.realsense import PairedRealSenseCamera
-        for camera in duo_robot.cameras.values():
-            if isinstance(camera, PairedRealSenseCamera) and camera.is_connected:
-                camera.disconnect()
-
-        if simulation_mode and duo_robot.is_connected:
-            duo_robot.disconnect()
+        resources = [
+            ("depth writer", getattr(depth, "close_worker", None)),
+            ("WebSocket server", getattr(teleop_device, "stop", None)),
+            ("WebXR server", getattr(camera_server, "stop", None)),
+            ("leader", getattr(leader_device, "disconnect", None)),
+            ("robot", duo_robot.disconnect),
+        ]
+        # Paired RealSense adapters can be owned outside the robot's original
+        # camera list. Disconnect them even after a partially failed connect.
+        resources.extend(
+            (
+                f"camera {name}",
+                lambda camera=camera: camera.disconnect() if camera.is_connected else None,
+            )
+            for name, camera in duo_robot.cameras.items()
+        )
+        for name, close in resources:
+            if close is None:
+                continue
+            try:
+                close()
+            except Exception as exc:
+                logger.warning("Could not close %s: %s", name, exc)
 
 if __name__ == "__main__":
     main()
