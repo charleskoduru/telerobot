@@ -1,0 +1,141 @@
+# Original SO101 simulation settings.
+robot:
+  id: single_arm
+  fps: 30
+  use_rerun: false
+cameras:
+  gripperCam:
+    type: realsense
+    model: d405
+    serial_number: '352122272219'
+    width: 640
+    height: 480
+    fps: 30
+    use_depth: true
+    depth_width: 640
+    depth_height: 480
+    align_depth: true
+    vr_gamma: 1.0
+    vr_gain: 1.0
+    vr_brightness: 20
+    simulation:
+      attach_to: gripper_link
+      position:
+      - 0.0
+      - 0.07
+      - 0.0
+      look_at:
+      - 0.025
+      - 0.0
+      - -0.18
+      up:
+      - 0.0
+      - 1.0
+      - 0.0
+      near: 0.04
+      far: 2.0
+  isoCam:
+    type: realsense
+    model: d415
+    serial_number: '027122062216'
+    width: 640
+    height: 480
+    fps: 30
+    use_depth: false
+    depth_width: 640
+    depth_height: 480
+    align_depth: true
+    vr_gamma: 1.0
+    vr_gain: 1.0
+    vr_brightness: 15
+    simulation:
+      attach_to: world
+      position:
+      - 0.525
+      - 0.02
+      - 0.35
+      look_at:
+      - 0.2
+      - 0.0
+      - 0.05
+      up:
+      - 0.0
+      - 0.0
+      - 1.0
+      near: 0.03
+      far: 3.0
+  baseCam:
+    type: realsense
+    model: d435i
+    serial_number: '926522071325'
+    width: 640
+    height: 480
+    fps: 30
+    use_depth: false
+    depth_width: 640
+    depth_height: 480
+    align_depth: true
+    vr_gamma: 1.0
+    vr_gain: 1.0
+    vr_brightness: 0
+    simulation:
+      attach_to: shoulder_link
+      position:
+      - -0.04
+      - 0.0
+      - 0.03
+      look_at:
+      - -1.0
+      - 0.0
+      - 0.0
+      up:
+      - 0.0
+      - 0.0
+      - 1.0
+      near: 0.03
+      far: 3.0
+teleoperation:
+  mode: simulation
+  simulation:
+    control_source: leader
+    physics_hz: 240
+    viewer: true
+    passive_force_compensation: true
+    joint_offsets_deg:
+      wrist_roll: -90.0
+  leader:
+    type: so101_leader
+    port: /dev/ttyACM1
+    id: so101_leader
+    use_degrees: true
+arms:
+  right:
+    type: so100
+    port: /dev/ttyACM0
+    use_degrees: true
+    cameras:
+    - gripperCam
+    - isoCam
+    - baseCam
+    regularization: 0.001
+    end_effector_step_sizes:
+      x: 0.45
+      y: 0.45
+      z: 0.45
+    end_effector_bounds:
+      min:
+      - 0.0417
+      - -0.2545
+      - -0.0585
+      max:
+      - 0.413
+      - 0.2829
+      - 0.3498
+    max_ee_step_m: 0.04
+    hard_workspace_guard: true
+    workspace_guard_margin_m: 0.005
+    gripper_speed_factor: 20.0
+dataset:
+  repo_id: charlieK123/simDataTest
+  single_task: picking up forceps and sorting the forceps
+  push_to_hub: true

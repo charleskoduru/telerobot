@@ -41,7 +41,7 @@ def packet(sequence=1):
 
 class ConfigTests(unittest.TestCase):
     def test_original_config_remains_rgb_only(self):
-        config = load_config(PROJECT / "config.yaml")
+        config = load_config(PROJECT / "examples/config/so101-simulation.yaml")
         self.assertEqual(len(config.cameras), 3)
         self.assertTrue(all(cam.type == "opencv" and not cam.use_depth for cam in config.cameras.values()))
 

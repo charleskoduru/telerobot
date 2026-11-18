@@ -1,0 +1,3 @@
+# Joint-space GELLO input only. No physical xArm SDK is required.
+dynamixel-sdk==3.7.31
+pyserial>=3.5,<4

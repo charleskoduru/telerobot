@@ -144,7 +144,10 @@ def main():
         duo_robot.connect()
 
         if simulation_mode and leader_device is not None:
-            duo_robot.set_joint_state(leader_device.get_action())
+            initial_action = leader_device.get_action()
+            if set(initial_action) != set(duo_robot.action_features):
+                raise ValueError("Leader action keys do not match the simulated robot.")
+            duo_robot.set_joint_state(initial_action)
 
         controller = build_controller(duo_robot, cfg)
         if DATASET_AVAILABLE:
@@ -422,7 +425,9 @@ def main():
                         # Leader-arm mode used to bypass the Cartesian workspace box
                         # completely. Apply the controller's hard FK guard here too.
                         action = controller.filter_joint_action(obs, action)
-                        duo_robot.send_action(action)
+                        applied_action = duo_robot.send_action(action)
+                        if isinstance(applied_action, dict):
+                            action = applied_action
                         controller.has_initial_position = False
                         result = (obs, action)
                     elif web_obs is not None:
@@ -440,7 +445,7 @@ def main():
                     # background camera threads can recover on the next iteration.
                     now = time.monotonic()
                     if now - last_camera_timeout_warning >= 1.0:
-                        logger.warning("Transient camera timeout; holding robot for this cycle: %s", exc)
+                        logger.warning("Transient camera/leader timeout; holding robot for this cycle: %s", exc)
                         last_camera_timeout_warning = now
                     result = None
 

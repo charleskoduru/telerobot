@@ -318,6 +318,10 @@ class BiController(Controller):
 
 
 def build_controller(robot: Robot, cfg: RobotConfig) -> Controller:
+    from telerobot.simulation.xarm6_robot import SimulatedXArm6
+    if isinstance(robot, SimulatedXArm6):
+        from telerobot.controller.xarm_leader import XArmLeaderController
+        return XArmLeaderController(robot, cfg)
     if isinstance(robot, SOFollower):
         return SingleController(robot, cfg)
 

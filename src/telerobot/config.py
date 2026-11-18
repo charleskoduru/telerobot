@@ -38,7 +38,7 @@ class CameraConfig:
 class ArmConfig:
     """Configuration for a single robot arm."""
     type: str
-    port: str
+    port: str = ""
     use_degrees: bool = True
     regularization: float = 1e-3
     end_effector_step_sizes: dict[str, float] = field(default_factory=lambda: {"x": 0.5, "y": 0.5, "z": 0.5})
@@ -68,6 +68,14 @@ class LeaderConfig:
     port: str
     id: str
     use_degrees: bool = True
+    joint_ids: list[int] = field(default_factory=lambda: [1, 2, 4, 5, 6, 7])
+    joint_signs: list[int] = field(default_factory=lambda: [1, 1, -1, 1, 1, 1])
+    start_joints_rad: list[float] = field(default_factory=lambda: [0, 0, -1.5708, 0, 1.5708, 0])
+    gripper_id: int = 8
+    gripper_open_deg: float | None = None
+    gripper_closed_deg: float | None = None
+    torque_joint_ids: list[int] = field(default_factory=list)
+    baudrate: int = 57600
 
 
 @dataclass
@@ -84,6 +92,8 @@ class SimulationConfig:
     gripper_damping: float = 3.0
     force_limit: float = 10.0
     joint_offsets_deg: dict[str, float] = field(default_factory=dict)
+    max_joint_speed_deg_s: float = 90.0
+    gripper_force_limit: float = 5.0
 
 @dataclass
 class TeleoperationConfig:
@@ -127,6 +137,15 @@ def load_config(path: str | Path) -> RobotConfig:
 
     with open(path) as f:
         raw: dict[str, Any] = yaml.safe_load(f)
+
+    if not isinstance(raw, dict):
+        raise ValueError("Config must contain a YAML mapping.")
+    if "profile" in raw:
+        profile = raw["profile"]
+        profiles = raw.get("profiles", {})
+        if profile not in profiles or not isinstance(profiles[profile], dict):
+            raise ValueError(f"Unknown robot profile {profile!r}; choose one of {list(profiles)}")
+        raw = profiles[profile]
 
     # Parse cameras
 
@@ -214,7 +233,7 @@ def load_config(path: str | Path) -> RobotConfig:
                 )
         arms[name] = ArmConfig(
             type=arm["type"],
-            port=arm["port"],
+            port=str(arm.get("port", "")),
             use_degrees=arm.get("use_degrees", True),
             regularization=arm.get("regularization", 1e-3),
             end_effector_step_sizes=arm.get("end_effector_step_sizes", {"x": 0.5, "y": 0.5, "z": 0.5}),
@@ -285,6 +304,8 @@ def load_config(path: str | Path) -> RobotConfig:
                 simulation_section.get("gripper_damping", 3.0)
             ),
             force_limit=float(simulation_section.get("force_limit", 10.0)),
+            max_joint_speed_deg_s=float(simulation_section.get("max_joint_speed_deg_s", 90.0)),
+            gripper_force_limit=float(simulation_section.get("gripper_force_limit", 5.0)),
             joint_offsets_deg={ 
                 str(name): float(value)
                 for name, value in (
@@ -297,9 +318,9 @@ def load_config(path: str | Path) -> RobotConfig:
     leader_section = teleoperation_section.get("leader")
     if leader_section is not None:
         leader_type = str(leader_section.get("type", "so101_leader")).lower()
-        if leader_type not in {"so100_leader", "so101_leader"}:
+        if leader_type not in {"so100_leader", "so101_leader", "gello"}:
             raise ValueError(
-                "teleoperation.leader.type must be 'so100_leader' or 'so101_leader'."
+                "teleoperation.leader.type must be 'so100_leader', 'so101_leader', or 'gello'."
             )
         leader_port = leader_section.get("port")
         if not leader_port:
@@ -309,6 +330,10 @@ def load_config(path: str | Path) -> RobotConfig:
             port=str(leader_port),
             id=str(leader_section.get("id", leader_type)),
             use_degrees=bool(leader_section.get("use_degrees", True)),
+            **{key: leader_section[key] for key in (
+                "joint_ids", "joint_signs", "start_joints_rad", "gripper_id",
+                "gripper_open_deg", "gripper_closed_deg", "torque_joint_ids", "baudrate"
+            ) if key in leader_section},
         )
 
     effective_control_mode = teleoperation_mode
@@ -318,7 +343,7 @@ def load_config(path: str | Path) -> RobotConfig:
         effective_control_mode = simulation_cfg.control_source
         if len(arms) != 1:
             raise ValueError(
-                "Simulation mode currently supports exactly one SO-101 arm."
+                "Simulation mode currently supports exactly one arm."
             )
         simulated_arm_cfg = next(iter(arms.values()))
         if not simulated_arm_cfg.use_degrees:
@@ -341,10 +366,35 @@ def load_config(path: str | Path) -> RobotConfig:
                 "Leader and target-arm use_degrees values must match."
             )
 
+    # Keep physical followers and existing SO101 modes unchanged.
+    for arm in arms.values():
+        if teleoperation_mode != "simulation" and (arm.type != "so100" or not arm.port):
+            raise ValueError("Physical mode requires type: so100 and a follower port; xarm6 is simulation-only.")
+        if teleoperation_mode == "simulation" and arm.type not in {"so100", "so101", "xarm6"}:
+            raise ValueError("Simulation arm type must be so100, so101, or xarm6.")
+        if arm.type == "xarm6":
+            if effective_control_mode != "leader" or leader_cfg is None or leader_cfg.type != "gello":
+                raise ValueError("xarm6 currently supports simulation with a GELLO leader; VR support is unchanged for SO101.")
+            if simulation_cfg.joint_offsets_deg:
+                raise ValueError("xarm6 uses calibrated GELLO coordinates; remove SO101 joint_offsets_deg.")
+            import math
+            for key in ("max_joint_speed_deg_s", "gripper_force_limit", "arm_stiffness", "arm_damping", "gripper_stiffness", "gripper_damping", "force_limit"):
+                value = getattr(simulation_cfg, key)
+                if not math.isfinite(value) or value <= 0:
+                    raise ValueError(f"teleoperation.simulation.{key} must be finite and positive.")
+        elif leader_cfg is not None and leader_cfg.type == "gello" and effective_control_mode == "leader":
+            raise ValueError("GELLO joint mapping currently requires an xarm6 target.")
+    if leader_cfg is not None and leader_cfg.type == "gello":
+        from telerobot.teleoperators.gello import validate_gello_config
+        validate_gello_config(leader_cfg)
+
     robot_section = raw.get("robot", {})
+    fps = robot_section.get("fps", 30)
+    if type(fps) is not int or fps <= 0:
+        raise ValueError("robot.fps must be a positive integer.")
     return RobotConfig(
         id=robot_section.get("id", "duo_robot"),
-        fps=robot_section.get("fps", 30),
+        fps=fps,
         cameras=cameras,
         arms=arms,
         teleoperation=TeleoperationConfig(
@@ -376,6 +426,10 @@ def build_leader_teleoperator(cfg: RobotConfig):
     leader_cfg = cfg.teleoperation.leader
     if leader_cfg is None:
         raise ValueError("Leader configuration is required in leader mode.")
+
+    if leader_cfg.type == "gello":
+        from telerobot.teleoperators.gello import GelloLeader
+        return GelloLeader(leader_cfg)
 
     from lerobot.teleoperators.so_leader import (
         SO100Leader,
@@ -409,12 +463,6 @@ def load_robot(path: str | Path) -> tuple[Robot, RobotConfig]:
     Returns:
         A tuple of (robot_instance, config).
     """
-    from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig, Cv2Backends
-    from lerobot.robots.so_follower import SOFollower
-    from lerobot.robots.so_follower.config_so_follower import SOFollowerConfig, SOFollowerRobotConfig
-    from lerobot.robots.bi_so_follower.config_bi_so_follower import BiSOFollowerConfig
-    from lerobot.robots.bi_so_follower.bi_so_follower import BiSOFollower
-
     #cfg are the values from the config.yaml file.
     cfg = load_config(path)
 
@@ -424,7 +472,17 @@ def load_robot(path: str | Path) -> tuple[Robot, RobotConfig]:
         from telerobot.simulation.so101_robot import SimulatedSO101
 
         arm_name = next(iter(cfg.arms))
+        if cfg.arms[arm_name].type == "xarm6":
+            from telerobot.simulation.xarm6_robot import SimulatedXArm6
+            return SimulatedXArm6(cfg=cfg, arm_name=arm_name), cfg
         return SimulatedSO101(cfg=cfg, arm_name=arm_name), cfg
+
+    from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig, Cv2Backends
+    from lerobot.robots.so_follower import SOFollower
+    from lerobot.robots.so_follower.config_so_follower import SOFollowerConfig, SOFollowerRobotConfig
+    from lerobot.robots.bi_so_follower.config_bi_so_follower import BiSOFollowerConfig
+    from lerobot.robots.bi_so_follower.bi_so_follower import BiSOFollower
+
 
     # Build camera configs
     camera_configs = {

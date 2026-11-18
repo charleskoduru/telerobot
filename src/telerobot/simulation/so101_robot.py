@@ -41,6 +41,8 @@ class SimulatedSO101:
     """Single SO-101 articulation controlled through Telerobot joint actions."""
 
     name = "so101_simulation"
+    JOINT_NAMES = JOINT_NAMES
+    ARM_JOINTS = ARM_JOINTS
 
     def __init__(self, cfg: Any, arm_name: str):
         self.cfg = cfg
@@ -52,7 +54,7 @@ class SimulatedSO101:
 
         # SingleController only needs bus.motors.keys(). This tiny shim lets the
         # existing VR processor/workspace guard reuse the exact SO-101 joint names.
-        self.bus = SimpleNamespace(motors={name: None for name in JOINT_NAMES})
+        self.bus = SimpleNamespace(motors={name: None for name in self.JOINT_NAMES})
 
         # Expose the complete observation schema before connecting; SAPIEN
         # camera components are bound when the robot connects.
@@ -73,7 +75,7 @@ class SimulatedSO101:
 
     @property
     def action_features(self) -> dict[str, type]:
-        return {f"{name}.pos": float for name in JOINT_NAMES}
+        return {f"{name}.pos": float for name in self.JOINT_NAMES}
 
     @property
     def observation_features(self) -> dict[str, type | tuple[int, int, int]]:
@@ -247,25 +249,25 @@ class SimulatedSO101:
 
         urdf_path = self._urdf_path()
         if not urdf_path.exists():
-            raise FileNotFoundError(f"SO-101 URDF not found: {urdf_path}")
+            raise FileNotFoundError(f"{self.name} URDF not found: {urdf_path}")
 
         loader = scene.create_urdf_loader()
         loader.fix_root_link = True
         articulation = loader.load(str(urdf_path))
         if articulation is None:
-            raise RuntimeError(f"SAPIEN failed to load SO-101 URDF: {urdf_path}")
+            raise RuntimeError(f"SAPIEN failed to load {self.name} URDF: {urdf_path}")
 
         joints = {joint.name: joint for joint in articulation.get_active_joints()}
-        missing = set(JOINT_NAMES) - set(joints)
+        missing = set(self.JOINT_NAMES) - set(joints)
         if missing:
             raise RuntimeError(
-                "SO-101 URDF is missing expected active joints: "
+                f"{self.name} URDF is missing expected active joints: "
                 + ", ".join(sorted(missing))
             )
 
-        for name in JOINT_NAMES:
+        for name in self.JOINT_NAMES:
             joint = joints[name]
-            if name == GRIPPER_JOINT:
+            if name not in self.ARM_JOINTS:
                 stiffness = self.sim_cfg.gripper_stiffness
                 damping = self.sim_cfg.gripper_damping
             else:
@@ -280,6 +282,7 @@ class SimulatedSO101:
         self.scene = scene
         self.articulation = articulation
         self._joints = joints
+        self._configure_articulation(sapien)
         self._build_simulated_cameras(sapien)
 
         # Keep drive targets on the URDF's initial qpos until the first leader/VR
@@ -304,7 +307,7 @@ class SimulatedSO101:
 
         self._connected = True
 
-        print(f"✅ SAPIEN SO-101 loaded: {urdf_path}")
+        print(f"✅ SAPIEN {self.name} loaded: {urdf_path}")
         print("   Active joints:")
         for joint in articulation.get_active_joints():
             lower, upper = self._limits(joint)
@@ -312,6 +315,10 @@ class SimulatedSO101:
                 f"   - {joint.name:16s} "
                 f"{math.degrees(lower):+7.1f}° .. {math.degrees(upper):+7.1f}°"
             )
+
+    def _configure_articulation(self, sapien_module) -> None:
+        """Optional model-specific articulation constraints."""
+        pass
 
     def set_joint_state(self, action: dict[str, float]) -> None:
         """Teleport once to a logical LeRobot pose and latch matching targets."""

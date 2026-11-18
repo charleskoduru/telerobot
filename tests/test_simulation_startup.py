@@ -232,7 +232,7 @@ class ServerLifecycleTests(unittest.TestCase):
 
 class SimulatedRecordingTests(unittest.TestCase):
     def make_robot(self, directory):
-        cfg = load_config(PROJECT / "config.yaml")
+        cfg = load_config(PROJECT / "examples/config/so101-simulation.yaml")
         cfg.cameras = {"gripperCam": cfg.cameras["gripperCam"]}
         camcfg = cfg.cameras["gripperCam"]
         camcfg.width = camcfg.height = camcfg.depth_width = camcfg.depth_height = 32

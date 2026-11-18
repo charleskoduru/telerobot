@@ -45,6 +45,7 @@ class SORobotKinematics(RobotKinematics):
 
 _KINEMATICS_REGISTRY: dict[str, type[RobotKinematics]] = {
     "so100": SORobotKinematics,
+    "so101": SORobotKinematics,
 }
 
 
