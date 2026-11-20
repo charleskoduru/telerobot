@@ -2,7 +2,7 @@
 # xarm6 = GELLO + xArm6/Robotiq 2F-85; so101 = original SO101 simulation.
 # Change only profile to switch the entire robot/leader/camera configuration.
 # Available: xarm6, so101. GELLO startup assumes its gripper is OPEN.
-profile: so101 #so101
+profile: xarm6 #so101 | xarm6
 profiles:
   xarm6:
     robot:
