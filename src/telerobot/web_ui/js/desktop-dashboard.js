@@ -4,6 +4,7 @@ class DesktopDashboard {
     this.config = window.telerobotConfig || {};
     this.connected = false;
     this.countingDown = false;
+    this.matchPending = false;
     this.runtime = {
       control_mode: this.config.teleoperationMode || 'vr',
       dataset_configured: !!this.config.datasetConfigured,
@@ -24,6 +25,8 @@ class DesktopDashboard {
     this.episodeCount = document.getElementById('desktop-episode-count');
     this.recordButton = document.getElementById('desktop-record-button');
     this.resetButton = document.getElementById('desktop-reset-button');
+    this.matchButton = document.getElementById('desktop-match-leader-button');
+    this.matchStatus = document.getElementById('desktop-match-leader-status');
     this.deletePreviousButton = document.getElementById('desktop-delete-previous-button');
     this.finalizeButton = document.getElementById('desktop-finalize-button');
     this.connectButton = document.getElementById('desktop-connect-button');
@@ -41,6 +44,7 @@ class DesktopDashboard {
 
     this.recordButton.addEventListener('click', () => this.toggleRecording());
     this.resetButton.addEventListener('click', () => this.resetRobot());
+    this.matchButton.addEventListener('click', () => this.matchLeader());
     this.deletePreviousButton.addEventListener('click', () => this.deletePreviousEpisode());
     this.finalizeButton.addEventListener('click', () => this.finalizeDataset());
     this.connectButton.addEventListener('click', () => this.connect());
@@ -65,6 +69,10 @@ class DesktopDashboard {
 
   onConnectionChange(status) {
     this.connected = status === WebSocketManager.STATUS_CONNECTED;
+    if (!this.connected && this.matchPending) {
+      this.matchPending = false;
+      this.matchStatus.textContent = 'Connection lost; pose matching was not confirmed.';
+    }
     this.helpText.textContent = this.connected
       ? 'Controls are ready.'
       : (status === WebSocketManager.STATUS_CONNECTING ? 'Connecting…' : 'Control server disconnected.');
@@ -72,6 +80,12 @@ class DesktopDashboard {
   }
 
   onServerMessage(message) {
+    if (message.type === 'leader_alignment_result') {
+      this.matchPending = false;
+      this.matchStatus.textContent = message.ok ? message.message : `Could not match: ${message.message}`;
+      this.render();
+      return;
+    }
     if (message.type !== 'runtime_status') return;
     this.runtime = { ...this.runtime, ...message };
     this.render();
@@ -106,6 +120,12 @@ class DesktopDashboard {
     this.recordButton.textContent = this.runtime.recording ? 'Stop & save episode' : 'Start episode';
     this.recordButton.classList.toggle('button-danger', !!this.runtime.recording);
     this.resetButton.disabled = !this.connected;
+    const matchAvailable = !!this.runtime.leader_alignment_available;
+    this.matchButton.hidden = !matchAvailable;
+    this.matchStatus.hidden = !matchAvailable;
+    this.matchButton.disabled = !matchAvailable || !this.connected
+      || !!this.runtime.recording || this.countingDown || this.matchPending;
+    this.matchButton.textContent = this.matchPending ? 'Matching…' : 'Match sim to leader';
     this.deletePreviousButton.disabled = !datasetReady
       || !!this.runtime.recording
       || this.countingDown
@@ -200,6 +220,20 @@ class DesktopDashboard {
     await this.sendAction('start_episode');
     this.countingDown = false;
     this.render();
+  }
+
+  async matchLeader() {
+    if (this.matchButton.disabled) return;
+    this.matchPending = true;
+    this.matchStatus.textContent = 'Reading leader pose…';
+    this.render();
+    try {
+      window.webSocketManager.requestLeaderAlignment();
+    } catch (error) {
+      this.matchPending = false;
+      this.matchStatus.textContent = `Could not send pose match: ${error.message}`;
+      this.render();
+    }
   }
 
   async resetRobot() {

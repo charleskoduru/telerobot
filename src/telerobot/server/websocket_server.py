@@ -3,6 +3,7 @@ import json
 import ssl
 import threading
 from pathlib import Path
+from queue import Empty, Full, Queue
 import websockets
 
 from telerobot import PACKAGE_DIR
@@ -21,6 +22,8 @@ class WebSocketServer:
     def __init__(self, use_ssl: bool = True, cert_file: str = None, key_file: str = None):
         self.connected = False
         self.last_observation = None
+        # Separate one-shot commands from continuously overwritten VR frames.
+        self._alignment_requests = Queue(maxsize=1)
         self._server = None
         self._loop = None
         self._thread = None
@@ -61,7 +64,16 @@ class WebSocketServer:
                     **self._runtime_status,
                 }))
             async for message in websocket:
-                self.last_observation = json.loads(message)
+                payload = json.loads(message)
+                if not isinstance(payload, dict):
+                    continue
+                if payload.get("command") == "align_simulation_to_leader":
+                    try:
+                        self._alignment_requests.put_nowait(True)
+                    except Full:
+                        pass  # Coalesce repeated clicks until the loop consumes one.
+                    continue
+                self.last_observation = payload
                 # print("📥 Observation received:", self.last_observation)
         except websockets.ConnectionClosedOK:
             print("🔌 Connection closed normally.")
@@ -71,6 +83,19 @@ class WebSocketServer:
             print(f"❌ Unexpected error in handler: {e}")
         finally:
             self._clients.discard(websocket)
+
+    def consume_alignment_request(self):
+        """Consume a button click exactly once on the robot-control thread."""
+        try:
+            self._alignment_requests.get_nowait()
+            return True
+        except Empty:
+            return False
+
+    def send_alignment_result(self, ok: bool, message: str):
+        self._schedule_broadcast({
+            "type": "leader_alignment_result", "ok": ok, "message": message,
+        })
 
     async def _broadcast_json(self, payload: dict):
         """Send one JSON event to every connected UI client."""

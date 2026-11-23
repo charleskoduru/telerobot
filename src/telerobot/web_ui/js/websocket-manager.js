@@ -203,12 +203,22 @@ class WebSocketManager {
     }
   }
 
+  /** Send one explicit simulation-only pose-match request. */
+  requestLeaderAlignment() {
+    if (!this.isConnected || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      throw new Error('Control server disconnected.');
+    }
+    this.socket.send(JSON.stringify({command: 'align_simulation_to_leader'}));
+  }
+
+
   /**
    * Trigger an action for a specified duration
    * @param {string} action - One of: 'reset', 'start_episode', 'stop_episode', 'delete_previous_episode', 'save_dataset'
    * @param {number} durationMs - Duration in milliseconds to keep action active
    * @returns {Promise<void>} - Resolves when action period is complete
    */
+
   triggerAction(action, durationMs = 500) {
     return new Promise((resolve, reject) => {
       if (this.actionLocked) {

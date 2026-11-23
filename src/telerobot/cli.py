@@ -120,6 +120,13 @@ def main():
     simulation_mode = cfg.teleoperation.mode == "simulation"
     control_mode = get_control_mode(cfg)
     leader_device = build_leader_teleoperator(cfg)
+    leader_alignment_available = (
+        simulation_mode and control_mode == "leader"
+        and cfg.teleoperation.leader is not None
+        and cfg.teleoperation.leader.type == "gello"
+        and len(cfg.arms) == 1
+        and next(iter(cfg.arms.values())).type == "xarm6"
+    )
 
 
     camera_server = None
@@ -181,6 +188,7 @@ def main():
         def publish_runtime_status():
             teleop_device.send_runtime_status(
                 control_mode=control_mode,
+                leader_alignment_available=leader_alignment_available,
                 dataset_configured=dataset is not None,
                 recording=recording,
                 # A checkpoint is intentionally non-terminal. Keep finalized=False so
@@ -340,7 +348,27 @@ def main():
                 controller.recalibrate()
                 teleop_device.send_transform_status("collecting")
 
-            if action_str == 'reset' and not controller.has_initial_position:
+            # A dedicated queue prevents a short UI click being lost to VR frames.
+            # Handle alignment on this thread so it cannot race send_action/step.
+            alignment_requested = teleop_device.consume_alignment_request()
+            if alignment_requested:
+                try:
+                    if not leader_alignment_available:
+                        raise ValueError("Pose matching is available only for GELLO + simulated xArm6.")
+                    from telerobot.simulation.leader_alignment import align_simulation_to_leader
+                    align_simulation_to_leader(
+                        duo_robot, leader_device, controller, recording=recording,
+                    )
+                    teleop_device.send_alignment_result(True, "Simulation matched to the leader pose.")
+                except Exception as exc:
+                    logger.warning("Simulation pose matching failed: %s", exc)
+                    teleop_device.send_alignment_result(False, str(exc))
+                # Keep cameras/physics running, but do not overwrite the matched
+                # pose with a second leader read in the same control cycle.
+
+            if alignment_requested:
+                pass
+            elif action_str == 'reset' and not controller.has_initial_position:
                 controller.reset()
             elif action_str == 'start_episode' and not recording:
                 if checkpointing:
