@@ -9,6 +9,8 @@ from __future__ import annotations
 import math
 import numpy as np
 
+from dynamixel_sdk import PortHandler, PacketHandler, GroupSyncRead
+
 ARM_JOINTS = tuple(f"joint{i}" for i in range(1, 7))
 
 
@@ -52,9 +54,8 @@ class GelloLeader:
         if result != 0 or error:
             raise RuntimeError(f"Dynamixel {motor_id}: torque write failed ({result}, {error}).")
 
-    def _read_raw(self):
-        # GroupSyncRead performs a new bounded SDK transaction. Never reuse
-        # previously cached values after missing packets or a device unplug.
+    def _read_raw(self): #reads leaders arm servo positions
+
         result = self._reader.txRxPacket()
         if result != 0:
             raise TimeoutError(f"GELLO serial read failed: {self._packet.getTxRxResult(result)}")
@@ -72,7 +73,6 @@ class GelloLeader:
         del calibrate
         if self._connected:
             return
-        from dynamixel_sdk import PortHandler, PacketHandler, GroupSyncRead
         print("GELLO: place leader at start_joints_rad reference pose with gripper OPEN.")
         input("Press Enter to calibrate the leader and start simulation: ")
         try:
@@ -106,7 +106,7 @@ class GelloLeader:
             self.disconnect()
             raise
 
-    def calibrate(self):
+    def calibrate(self): #outputs startup offsets for the arm joints
         raw = self._read_raw()
         self._raw_previous = raw.copy()
         self._unwrapped = raw.copy()
@@ -122,7 +122,7 @@ class GelloLeader:
             raise RuntimeError("GELLO is not connected.")
         return self.action_from_raw(self._read_raw())
 
-    def action_from_raw(self, raw):
+    def action_from_raw(self, raw): #applies offset for the raw joint positions
         """Map a fresh sample; unwrap encoder rollover without 360-degree jumps."""
         raw = np.asarray(raw, dtype=float)
         if raw.shape != self._raw_previous.shape or not np.isfinite(raw).all():

@@ -61,7 +61,7 @@ def main():
     logger = get_logger()
 
     #This section enable version of telerobot to be operated: telerobot or telerobot run start the program. Use telerobot --help to see the available commands and options.
-    parser = argparse.ArgumentParser(description="Telerobot — VR or leader-arm teleoperation for SO-ARM101")
+    parser = argparse.ArgumentParser(description="Telerobot — VR or leader-arm teleoperation for SO-ARM101 and xARM6")
     subparsers = parser.add_subparsers(dest="command")
 
     # --- run (default) ---
